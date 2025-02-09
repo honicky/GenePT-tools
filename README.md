@@ -10,6 +10,13 @@ This project builds upon the GenePT paper and provides tools to:
 - Generate composable embeddings across different dimensions
 - Perform cell type classification using embeddings
 
+### Results
+
+The following image shows a detailed summary of the results of the comparison between GenePT and scGPT zero-shot classification so far:
+![Comparison of embedding methods](./img/comparison_with_small.png)
+We used a [Google Sheet](https://docs.google.com/spreadsheets/d/1Epjhj0ZBFEdY5iIONLi9-I8geACofHlaFGvKu561I5U/edit?usp=sharing) to format the output
+
+
 ## Setup
 
 ### Requirements
