@@ -1,4 +1,4 @@
-# 1M Cells Dataset Metadata Description
+# Tabula Sapiens 1M Cells Dataset Metadata Description
 
 This document describes the metadata columns available in the 1M cells dataset's observation (cell) annotations.
 
