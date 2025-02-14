@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "Your project description"
 requires-python = ">=3.9"
 dependencies = [
-    "cellxgene-census",
     "dash",
     "datasets",
     "ipykernel",

@@ -55,17 +55,17 @@ GenePT-tools/
 ```
 ### Notebooks
 
-| Notebook                                        | Description                                                                       |
-|-------------------------------------------------|-----------------------------------------------------------------------------------|
-| [`tabula_sapiens_embed_genept.ipynb`](notebooks/tabula_sapiens_embed_genept.ipynb) | Evaluates GenePT embeddings' cell classification performance on Tabula Sapiens    |
-| [`port.ipynb`](notebooks/port.ipynb)             | Handles data preparation and uploading of GenePT embeddings to HuggingFace Hub    |
-| [`lupus_data_analysis.ipynb`](notebooks/lupus_data_analysis.ipynb) | Analyzes gene expression patterns in lupus patients using GenePT embeddings       |
-| [`brain_age_data_analysis.ipynb`](notebooks/brain_age_data_analysis.ipynb) | Predicts brain age from gene expression data using balanced bootstrap sampling    |
-| [`blood_age_data_analysis.ipynb`](notebooks/blood_age_data_analysis.ipynb) | Analyzes blood-based gene expression patterns for age prediction                  |
+| Notebook                                                                                                   | Description                                                                       |
+|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| [`tabula_sapiens_embed_genept.ipynb`](notebooks/tabula_sapiens_embed_genept.ipynb)                         | Evaluates GenePT embeddings' cell classification performance on Tabula Sapiens    |
+| [`port.ipynb`](notebooks/port.ipynb)                                                                       | Handles data preparation and uploading of GenePT embeddings to HuggingFace Hub    |
+| [`lupus_data_analysis.ipynb`](notebooks/lupus_data_analysis.ipynb)                                         | Analyzes gene expression patterns in lupus patients using GenePT embeddings       |
+| [`brain_age_data_analysis.ipynb`](notebooks/brain_age_data_analysis.ipynb)                                 | Predicts brain age from gene expression data using balanced bootstrap sampling    |
+| [`blood_age_data_analysis.ipynb`](notebooks/blood_age_data_analysis.ipynb)                                 | Analyzes blood-based gene expression patterns for age prediction                  |
 | [`brain_age_data_analysis_full_embeddings.ipynb`](notebooks/brain_age_data_analysis_full_embeddings.ipynb) | Extended brain age prediction using complete gene embedding features              |
-| [`tabula_sapiens_eda.ipynb`](notebooks/tabula_sapiens_eda.ipynb) | Exploratory analysis of the Tabula Sapiens single-cell dataset                    |
-| [`aging_and_related_gene_query.ipynb`](notebooks/aging_and_related_gene_query.ipynb) | Queries and analyzes aging-related genes using NCBI gene summaries                |
-| [`tabula_sapiens_embed_scgpt.ipynb`](notebooks/tabula_sapiens_embed_scgpt.ipynb) | Implements scGPT embeddings for Tabula Sapiens cell classification                |
+| [`tabula_sapiens_eda.ipynb`](notebooks/tabula_sapiens_eda.ipynb)                                           | Exploratory analysis of the Tabula Sapiens single-cell dataset                    |
+| [`aging_and_related_gene_query.ipynb`](notebooks/aging_and_related_gene_query.ipynb)                       | Queries and analyzes aging-related genes using NCBI gene summaries                |
+| [`tabula_sapiens_embed_scgpt.ipynb`](notebooks/tabula_sapiens_embed_scgpt.ipynb)                           | Implements scGPT embeddings for Tabula Sapiens cell classification                |
 
 ### Data Processing
 - Support for loading and processing large sparse AnnData files
