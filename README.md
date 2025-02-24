@@ -60,7 +60,7 @@ Take a look at `generate_genept_embeddings.ipynb` to see how to generate a GeneP
 Take a look at `tabula_sapiens_*.ipynb` for a comparison of cell type classification using GenePT and scGPT embeddings.
 
 | Notebook                                                                                                   | Description                                                                       |
-|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------|
 | [`generate_genept_embeddings.ipynb`](notebooks/generate_genept_embeddings.ipynb)                           | Generates the GenePT embeddings and dataset for upload to HuggingFace Hub         |
 | [`tabula_sapiens_embed_genept.ipynb`](notebooks/tabula_sapiens_embed_genept.ipynb)                         | Evaluates GenePT embeddings' cell classification performance on Tabula Sapiens    |
 | [`create_hf_repos.ipynb`](notebooks/create_hf_repos.ipynb)                                                 | Creates the initial HuggingFace repositories for the GenePT embeddings and dataset|
@@ -93,11 +93,11 @@ Take a look at `tabula_sapiens_*.ipynb` for a comparison of cell type classifica
 - [x] Minimum cell count filtering per cell type
 - [x] AnnData integration
 - [x] Original GenePT embeddings support
-- [ ] prompt improvements
-    [x] remove aging
-    [x] add cell type
-    [ ] add tissue type
-    [ ] add disfuctional cell type
+- [ ] Prompt improvements
+  - [x] Remove aging
+  - [x] Add cell type
+  - [ ] Add tissue type
+  - [ ] Add dysfunctional cell type
 - [ ] scGPT with batch tokens
 - [ ] scGPT with modality tokens
 - [ ] scGPT with combined batch/modality tokens
