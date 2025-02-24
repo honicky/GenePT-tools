@@ -1,80 +1,60 @@
-import numpy as np
-import pandas as pd
-
-
-def create_gene_embedding_matrix(
-    gene_names: list[str], gene_embedding: pd.DataFrame
-) -> np.ndarray:
+def create_embedding_matrix(merged_embeddings, major_ensembl_ids):
     """
-    Create a lookup matrix for gene embeddings with vectorized operations.
+    Create a reordered embedding matrix that aligns gene embeddings with expression matrix columns.
 
     Args:
-        gene_names (list): List of gene names to look up
-        gene_embedding (pd.DataFrame): DataFrame containing gene embeddings with genes as index
+        merged_embeddings (pd.DataFrame): DataFrame containing gene embeddings with 'ensembl_id' column
+        major_ensembl_ids (pd.Series): Series of Ensembl IDs in the order they appear in expression matrix
 
     Returns:
-        np.ndarray: Matrix of gene embeddings with shape (len(gene_names), embedding_dim)
+        tuple: (embedding_matrix, valid_indices)
+            - embedding_matrix: numpy array of shape (n_embedding_dims, n_valid_genes)
+            - valid_indices: list of indices mapping to original expression matrix columns
     """
-    EMBED_DIM = gene_embedding.shape[1]
+    # Get the embedding values without the metadata columns
+    embedding_cols = [
+        col for col in merged_embeddings.columns if col not in ["ensembl_id"]
+    ]
 
-    # Initialize zero matrix directly with numpy
-    lookup_embed = np.zeros(shape=(len(gene_names), EMBED_DIM))
+    # Create a mapping from major_ensembl_ids to column indices in cell_gene_matrix
+    gene_idx_map = {gene_id: idx for idx, gene_id in enumerate(major_ensembl_ids)}
 
-    # Fill in matching genes one by one to match notebook behavior
-    count_missing = 0
-    for i, gene in enumerate(gene_names):
-        if gene in gene_embedding.index:
-            lookup_embed[i, :] = gene_embedding.loc[gene]
-        else:
-            count_missing += 1
+    # Find which embeddings correspond to genes in our expression matrix
+    # and get their indices in the correct order
+    valid_indices = []
+    embedding_indices = []
+    for i, ensembl_id in enumerate(merged_embeddings.ensembl_id):
+        if ensembl_id in gene_idx_map:
+            valid_indices.append(gene_idx_map[ensembl_id])
+            embedding_indices.append(i)
 
-    print(
-        f"Unable to match {count_missing} out of {len(gene_names)} genes in the GenePT-w embedding"
+    # Create the reordered embedding matrix
+    embedding_matrix = (
+        merged_embeddings[embedding_cols].iloc[embedding_indices].values.T
     )
 
-    return lookup_embed
+    return embedding_matrix, valid_indices
 
-
-def gene_pt_w_embedding(
-    gene_expression_counts: pd.DataFrame,
-    experiment_ids: list[str],
-    gene_embedding: pd.DataFrame,
-) -> np.ndarray:
+def create_cell_embeddings(expression_matrix, embedding_matrix, valid_indices):
     """
-    Calculate the normalized GenePT-w embedding.
+    Create normalized cell embeddings from gene expression data and gene embeddings.
 
     Args:
-        gene_expression_counts (pd.DataFrame): DataFrame containing gene expression counts with gene names as index
-        experiment_ids (list[str]): List of experiment IDs to include in the embedding
-        gene_embedding (pd.DataFrame): DataFrame containing gene embeddings with gene names as index
+        expression_matrix: scipy.sparse.csr_matrix or numpy array of shape (n_cells, n_genes)
+        embedding_matrix: numpy array of shape (n_embedding_dims, n_valid_genes)
+        valid_indices: list of indices to select genes that have embeddings
 
     Returns:
-        np.ndarray: Normalized GenePT-w embedding
+        numpy array of shape (n_cells, n_embedding_dims) containing normalized cell embeddings
     """
-    lookup_embed = create_gene_embedding_matrix(
-        gene_expression_counts.gene_name, gene_embedding
-    )
-    # print(f"gene_expression_counts[experiment_ids].T.shape: {gene_expression_counts[experiment_ids].T.shape}")
-    # print(f"lookup_embed.shape: {lookup_embed.shape}")
-    unnormalized_gene_pt_w_embedding = np.dot(
-        gene_expression_counts[experiment_ids].T, lookup_embed
-    )
-    # print(f"unnormalized_gene_pt_w_embedding.shape: {unnormalized_gene_pt_w_embedding.shape}")
-    normalized_gene_pt_w_embedding = unnormalized_gene_pt_w_embedding / np.linalg.norm(
-        unnormalized_gene_pt_w_embedding, axis=1, keepdims=True
-    )
-    return pd.DataFrame(normalized_gene_pt_w_embedding, index=experiment_ids)
+    # Select only the columns from expression matrix that have corresponding embeddings
+    filtered_expression = expression_matrix[:, valid_indices]
 
+    # Perform the matrix multiplication (n_cells x n_embedding_dimensions)
+    cell_embeddings = filtered_expression @ embedding_matrix.T
 
-def gene_pt_w_embedding_normalized(
-    gene_expression_counts: pd.DataFrame,
-    experiment_ids: list[str],
-    gene_embedding: pd.DataFrame,
-) -> np.ndarray:
-    return gene_pt_w_embedding(
-        gene_expression_counts, experiment_ids, gene_embedding
-    ) / np.linalg.norm(
-        gene_pt_w_embedding(gene_expression_counts, experiment_ids, gene_embedding),
-        axis=1,
-        keepdims=True,
-    )
+    # Normalize the cell embeddings
+    norms = np.linalg.norm(cell_embeddings, axis=1, keepdims=True)
+    cell_embeddings = cell_embeddings / norms
+
+    return cell_embeddings

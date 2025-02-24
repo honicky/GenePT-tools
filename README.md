@@ -47,7 +47,7 @@ isort --gitignore .
 pytest
 ```
 
-## Features
+## Important files
 ```
 GenePT-tools/
 ├── src/        # utility functions
@@ -55,17 +55,19 @@ GenePT-tools/
 ```
 ### Notebooks
 
+Take a look at `generate_genept_embeddings.ipynb` to see how to generate a GenePT embeddings and dataset and upload them to HuggingFace Hub.  `create_hf_repos.ipynb` will create a new repository for the embeddings and dataset.
+
+Take a look at `tabula_sapiens_*.ipynb` for a comparison of cell type classification using GenePT and scGPT embeddings.
+
 | Notebook                                                                                                   | Description                                                                       |
 |------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| [`generate_genept_embeddings.ipynb`](notebooks/generate_genept_embeddings.ipynb)                           | Generates the GenePT embeddings and dataset for upload to HuggingFace Hub         |
 | [`tabula_sapiens_embed_genept.ipynb`](notebooks/tabula_sapiens_embed_genept.ipynb)                         | Evaluates GenePT embeddings' cell classification performance on Tabula Sapiens    |
-| [`port.ipynb`](notebooks/port.ipynb)                                                                       | Handles data preparation and uploading of GenePT embeddings to HuggingFace Hub    |
-| [`lupus_data_analysis.ipynb`](notebooks/lupus_data_analysis.ipynb)                                         | Analyzes gene expression patterns in lupus patients using GenePT embeddings       |
-| [`brain_age_data_analysis.ipynb`](notebooks/brain_age_data_analysis.ipynb)                                 | Predicts brain age from gene expression data using balanced bootstrap sampling    |
-| [`blood_age_data_analysis.ipynb`](notebooks/blood_age_data_analysis.ipynb)                                 | Analyzes blood-based gene expression patterns for age prediction                  |
-| [`brain_age_data_analysis_full_embeddings.ipynb`](notebooks/brain_age_data_analysis_full_embeddings.ipynb) | Extended brain age prediction using complete gene embedding features              |
+| [`create_hf_repos.ipynb`](notebooks/create_hf_repos.ipynb)                                                 | Creates the initial HuggingFace repositories for the GenePT embeddings and dataset|
 | [`tabula_sapiens_eda.ipynb`](notebooks/tabula_sapiens_eda.ipynb)                                           | Exploratory analysis of the Tabula Sapiens single-cell dataset                    |
-| [`aging_and_related_gene_query.ipynb`](notebooks/aging_and_related_gene_query.ipynb)                       | Queries and analyzes aging-related genes using NCBI gene summaries                |
-| [`tabula_sapiens_embed_scgpt.ipynb`](notebooks/tabula_sapiens_embed_scgpt.ipynb)                           | Implements scGPT embeddings for Tabula Sapiens cell classification                |
+| [`tabula_sapiens_embed_genept.ipynb`](notebooks/tabula_sapiens_embed_genene.ipynb)                         | Embed a subset of the Tabula Sapiens dataset using GenePT embeddings              |
+| [`tabula_sapiens_embed_scgpt.ipynb`](notebooks/tabula_sapiens_embed_scgpt.ipynb)                           | Embed a subset of the Tabula Sapiens dataset using scGPT embeddings               |
+| [`tabula_sapiens_analysis_all.ipynb`](notebooks/tabula_sapiens_analysis_all.ipynb)                         | A comparison of GenePT and scGPT embeddings for cell type classification on TS    |
 
 ### Data Processing
 - Support for loading and processing large sparse AnnData files
@@ -91,13 +93,18 @@ GenePT-tools/
 - [x] Minimum cell count filtering per cell type
 - [x] AnnData integration
 - [x] Original GenePT embeddings support
+- [ ] prompt improvements
+    [x] remove aging
+    [x] add cell type
+    [ ] add tissue type
+    [ ] add disfuctional cell type
 - [ ] scGPT with batch tokens
 - [ ] scGPT with modality tokens
 - [ ] scGPT with combined batch/modality tokens
 - [ ] Complete Tabula Sapiens cell embedding
 - [ ] Cell-document bidirectional lookups
 - [ ] Cell separation analysis
-
+  
 ## Contributing
 
 This is a preliminary repository with work in progress. Code is mostly untested but being actively developed. Contributions and collaborations are welcome.
