@@ -1,3 +1,5 @@
+import numpy as np
+
 def create_embedding_matrix(merged_embeddings, major_ensembl_ids):
     """
     Create a reordered embedding matrix that aligns gene embeddings with expression matrix columns.
