@@ -4,11 +4,13 @@ version = "0.1.0"
 description = "Your project description"
 requires-python = ">=3.9"
 dependencies = [
+    "anndata",
     "dash",
     "datasets",
     "ipykernel",
     "lightgbm",
     "matplotlib",
+    "nbformat",
     "numpy",
     "openai",
     "pandas",
@@ -16,7 +18,7 @@ dependencies = [
     "scanpy",
     "scikit-learn",
     "seaborn",
-    "torch",
+    "torch==2.4.0",
     "umap-learn",
 ]
 
