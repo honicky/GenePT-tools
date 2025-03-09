@@ -32,3 +32,39 @@ In addition to the provided information, please:
 
 Only include specific information about the gene or gene class. If information is not well documented, say so briefly and don't expound on general information.
 """
+
+NCBI_UNIPROT_ASSOCIATED_CELL_TYPE_PROMPT_V1 = """Tell me about the {0} gene.
+
+Here is the NCBI and UniProt summary of the gene:
+
+{1}
+
+----
+
+In addition to the provided information, please list any cell types or cell classes that the gene is expressed in.
+
+Only include specific information about the gene or gene class.
+Avoid generic language and non-informative discussion.
+Do not make suggestions about other sources of information.
+"""
+
+NCBI_UNIPROT_ASSOCIATED_CELL_TYPE_TISSUE_DRUG_PATHWAY_PROMPT_V1 = """Tell me about the {0} gene.
+
+Here is the NCBI and UniProt summary of the gene:
+
+{1}
+
+----
+
+In addition to the provided information, please:
+
+1. List any other genes that the gene is associated with, particularly those not mentioned in the summaries above.
+2. List any tissues or tissue classes that the gene is expressed in.
+3. List any cell types or cell classes that the gene is expressed in.
+4. List any drug or drug classes that are known to interact with this gene. 
+5. List pathways and biological processes that this gene is involved in.
+
+Only include specific information about the gene or gene class.
+Avoid generic language and non-informative discussion.
+Do not make suggestions about other sources of information.
+"""

@@ -41,7 +41,7 @@ class BatchInfo:
         self.request_data = request_data
         self.data_dir = data_dir
 
-def get_gene_text_batch_requests(summary_of_genes: dict, prompt_template: str, request_id_prefix: str) -> list[dict]:
+def get_gene_text_batch_requests(summary_of_genes: dict, prompt_template: str, request_id_prefix: str, model: str = "gpt-4o-mini") -> list[dict]:
     """
     Generate a list of batch request objects for processing gene summaries through OpenAI's API.
 
@@ -59,7 +59,7 @@ def get_gene_text_batch_requests(summary_of_genes: dict, prompt_template: str, r
                    - body: Request body containing model configuration and messages
 
     Note:
-        Each request uses the gpt-4o-mini model with a 2000 token limit.
+        Each request uses the model with a 2000 token limit.
     """
     return [
         {
@@ -67,7 +67,7 @@ def get_gene_text_batch_requests(summary_of_genes: dict, prompt_template: str, r
             "method": "POST",
             "url": "/v1/chat/completions",
             "body": {
-                "model": "gpt-4o-mini",
+                "model": model,
                 "messages": [
                     {
                         "role": "system",
@@ -87,7 +87,7 @@ def get_gene_text_batch_requests(summary_of_genes: dict, prompt_template: str, r
     ]
 
 
-def get_gene_embedding_batch_requests(gene_descriptions_pdf: pd.DataFrame, request_id_prefix: str) -> list[dict]:
+def get_gene_embedding_batch_requests(gene_descriptions_pdf: pd.DataFrame, request_id_prefix: str, model: str = "text-embedding-3-large") -> list[dict]:
     
     prompt_template = """
     {0}
@@ -101,7 +101,7 @@ def get_gene_embedding_batch_requests(gene_descriptions_pdf: pd.DataFrame, reque
             "method": "POST",
             "url": "/v1/embeddings",
             "body": {
-                "model": "text-embedding-3-large",
+                "model": model,
                 "input": prompt_template.format(
                     row.description, row.gpt_response
                 ),

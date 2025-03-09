@@ -1,17 +1,16 @@
 import numpy as np
+import torch
 
-def create_embedding_matrix(merged_embeddings, major_ensembl_ids):
+def _get_embedding_indices(merged_embeddings, major_ensembl_ids):
     """
-    Create a reordered embedding matrix that aligns gene embeddings with expression matrix columns.
+    Helper function to get embedding indices and valid indices for both numpy and torch versions.
 
     Args:
         merged_embeddings (pd.DataFrame): DataFrame containing gene embeddings with 'ensembl_id' column
         major_ensembl_ids (pd.Series): Series of Ensembl IDs in the order they appear in expression matrix
 
     Returns:
-        tuple: (embedding_matrix, valid_indices)
-            - embedding_matrix: numpy array of shape (n_embedding_dims, n_valid_genes)
-            - valid_indices: list of indices mapping to original expression matrix columns
+        tuple: (embedding_cols, valid_indices, embedding_indices)
     """
     # Get the embedding values without the metadata columns
     embedding_cols = [
@@ -30,9 +29,56 @@ def create_embedding_matrix(merged_embeddings, major_ensembl_ids):
             valid_indices.append(gene_idx_map[ensembl_id])
             embedding_indices.append(i)
 
+    return embedding_cols, valid_indices, embedding_indices
+
+def create_embedding_matrix(merged_embeddings, major_ensembl_ids):
+    """
+    Create a reordered embedding matrix that aligns gene embeddings with expression matrix columns.
+
+    Args:
+        merged_embeddings (pd.DataFrame): DataFrame containing gene embeddings with 'ensembl_id' column
+        major_ensembl_ids (pd.Series): Series of Ensembl IDs in the order they appear in expression matrix
+
+    Returns:
+        tuple: (embedding_matrix, valid_indices)
+            - embedding_matrix: numpy array of shape (n_embedding_dims, n_valid_genes)
+            - valid_indices: list of indices mapping to original expression matrix columns
+    """
+    embedding_cols, valid_indices, embedding_indices = _get_embedding_indices(
+        merged_embeddings, major_ensembl_ids
+    )
+    
     # Create the reordered embedding matrix
     embedding_matrix = (
         merged_embeddings[embedding_cols].iloc[embedding_indices].values.T
+    )
+
+    return embedding_matrix, valid_indices
+
+def create_embedding_matrix_torch(merged_embeddings, major_ensembl_ids, device='cpu'):
+    """
+    Create a reordered embedding matrix that aligns gene embeddings with expression matrix columns.
+    PyTorch version that returns a torch.Tensor.
+
+    Args:
+        merged_embeddings (pd.DataFrame): DataFrame containing gene embeddings with 'ensembl_id' column
+        major_ensembl_ids (pd.Series): Series of Ensembl IDs in the order they appear in expression matrix
+        device (str or torch.device): Device to place the tensor on ('cpu' or 'cuda')
+
+    Returns:
+        tuple: (embedding_matrix, valid_indices)
+            - embedding_matrix: torch.Tensor of shape (n_embedding_dims, n_valid_genes)
+            - valid_indices: list of indices mapping to original expression matrix columns
+    """
+    embedding_cols, valid_indices, embedding_indices = _get_embedding_indices(
+        merged_embeddings, major_ensembl_ids
+    )
+
+    # Create the reordered embedding matrix as a PyTorch tensor on specified device
+    embedding_matrix = torch.tensor(
+        merged_embeddings[embedding_cols].iloc[embedding_indices].values.T,
+        dtype=torch.float32,
+        device=device
     )
 
     return embedding_matrix, valid_indices
@@ -57,6 +103,33 @@ def create_cell_embeddings(expression_matrix, embedding_matrix, valid_indices):
 
     # Normalize the cell embeddings
     norms = np.linalg.norm(cell_embeddings, axis=1, keepdims=True)
+    cell_embeddings = cell_embeddings / norms
+
+    return cell_embeddings
+
+def create_cell_embeddings_torch(expression_matrix, embedding_matrix, device='cpu'):
+    """
+    Create normalized cell embeddings using PyTorch operations.
+
+    Args:
+        expression_matrix: torch.sparse.FloatTensor in CSR format of shape (n_cells, n_genes)
+        embedding_matrix: torch.Tensor of shape (n_embedding_dims, n_valid_genes)
+        device (str or torch.device): Device to place the tensors on ('cpu' or 'cuda')
+
+    Returns:
+        torch.Tensor of shape (n_cells, n_embedding_dims) containing normalized cell embeddings
+    """
+    # Only move tensors if they're not already on the target device
+    if expression_matrix.device != device:
+        expression_matrix = expression_matrix.to(device)
+    if embedding_matrix.device != device:
+        embedding_matrix = embedding_matrix.to(device)
+    
+    # Perform sparse matrix multiplication
+    cell_embeddings = torch.sparse.mm(expression_matrix,  embedding_matrix.T)
+    
+    # Normalize the cell embeddings
+    norms = torch.norm(cell_embeddings, dim=1, keepdim=True)
     cell_embeddings = cell_embeddings / norms
 
     return cell_embeddings

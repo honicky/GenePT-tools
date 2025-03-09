@@ -10,6 +10,8 @@ import h5py
 import pandas as pd
 import requests
 from scipy import sparse
+import torch
+import numpy as np
 
 
 def download_file(
@@ -167,8 +169,37 @@ def setup_data_dir():
     zip_path = download_file(url)
 
     extract_zip(zip_path, data_dir)
-
+    _setup_huggingface_models(data_dir)
     print("Setup finished!")
+
+def _setup_huggingface_models(data_dir):
+    """
+    Set up the huggingface models by downloading and extracting required files.
+    """
+    huggingface_model_name = "honicky/genept-composable-embeddings"
+    huggingface_model_url_prefix = f"https://huggingface.co/{huggingface_model_name}/resolve/main/"
+    
+    # Known list of model files
+    huggingface_model_files = [
+        "embedding_original_ada_text.parquet",
+        "embedding_original_large_3.parquet",
+        "embedding_associations_age_cell_type_drugs_pathways_openai_large.parquet",
+        "embedding_associations_age_drugs_pathways_openai_large.parquet",
+        "embedding_associations_cell_type_openai_large.parquet"
+    ]
+
+    for filename in huggingface_model_files:
+        file_path = data_dir / "huggingface_model" / filename
+        if file_path.exists():
+            print(f"Skipping {filename} - already exists")
+        else:
+            try:
+                download_file(
+                    huggingface_model_url_prefix + filename + "?download=true",
+                    file_path
+                )
+            except Exception as e:
+                print(f"Failed to download {filename}: {str(e)}")
 
 
 def get_gene_embeddings(model_name) -> dict:
@@ -216,6 +247,173 @@ def download_gdrive_file(url: str, output_path: Union[Path, str]) -> Path:
     return output_path
 
 
+class AnnDataChunker:
+    """
+    A class for loading a subset of an AnnData object from an h5ad file for use in multi-core processing.
+    
+    Parameters
+    ----------
+    file_path : str or Path
+        Path to the h5ad file
+    obs_columns : list of str or None
+        List of observation columns to load. If None, loads all columns.
+    
+    Examples
+    --------
+    >>> with AnnDataChunker('data.h5ad', ['cell_type', 'condition']) as chunker:
+    ...     chunk = chunker.load_subset(start_row=0, n_rows=1000)
+    """
+    def __init__(self, file_path, obs_columns):
+        if not isinstance(file_path, (str, Path)):
+            raise TypeError("file_path must be a string or Path object")
+        if obs_columns is not None and not isinstance(obs_columns, (list, tuple)):
+            raise TypeError("obs_columns must be None or a list/tuple of strings")
+        
+        self.file_path = Path(file_path)
+        self.obs_columns = obs_columns
+        self._file = None
+        self._obs_df = None
+        self._var_df = None
+
+    def _load_obs_metadata(self, f, obs_columns=None):
+        """Helper function to load all observation (cell) metadata."""
+        selected_obs_keys = obs_columns if obs_columns else list(f["obs"].keys())
+        obs_dict = {}
+
+        for key in selected_obs_keys:
+            if key not in f["obs"]:
+                continue
+
+            item = f["obs"][key]
+            if isinstance(item, h5py.Dataset):
+                obs_dict[key] = item[:]  # Load entire array
+            elif isinstance(item, h5py.Group) and "categories" in item and "codes" in item:
+                categories = [
+                    cat.decode("utf-8") if isinstance(cat, bytes) else cat
+                    for cat in item["categories"][:]
+                ]
+                codes = item["codes"][:]  # Load all codes
+                obs_dict[key] = pd.Categorical.from_codes(codes, categories=categories)
+
+        return pd.DataFrame(obs_dict)
+
+    def open(self):
+        """
+        Open the h5ad file in read mode using h5py.
+        Returns self for method chaining.
+        """
+        if self._file is None:
+            self._file = h5py.File(self.file_path, "r")
+            self._obs_df = self._load_obs_metadata(self._file, self.obs_columns)  # Using class method
+            self._var_df = _load_var_metadata(self._file)
+        return self
+
+    def close(self):
+        """
+        Close the h5py file.
+        """
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+            del self._obs_df
+            del self._var_df
+            self._obs_df = None
+            self._var_df = None
+
+    def __enter__(self):
+        """
+        Context manager entry point.
+        """
+        return self.open()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """
+        Context manager exit point.
+        """
+        self.close()
+
+    @property
+    def obs(self):
+        if self._obs_df is None:
+            raise RuntimeError("File not opened")
+        return self._obs_df
+
+    @property
+    def var(self):
+        if self._var_df is None:
+            raise RuntimeError("File not opened")
+        return self._var_df
+
+    def load_subset(self, start_row, n_rows, valid_indices=None):
+        """
+        Load a subset of rows from the h5ad file.
+
+        Args:
+            start_row: Starting row index
+            n_rows: Number of rows to load
+            valid_indices: Optional list of column indices to keep. If provided,
+                         will filter the expression matrix to only these columns.
+        """
+        if not isinstance(start_row, int) or start_row < 0:
+            raise ValueError("start_row must be a non-negative integer")
+        if not isinstance(n_rows, int) or n_rows <= 0:
+            raise ValueError("n_rows must be a positive integer")
+            
+        total_rows = len(self._obs_df)
+        if start_row >= total_rows:
+            raise ValueError(f"start_row ({start_row}) exceeds total rows ({total_rows})")
+        if start_row + n_rows > total_rows:
+            n_rows = total_rows - start_row
+            print(f"Warning: Requested rows exceed total rows. Adjusting n_rows to {n_rows}")
+        
+        if self._file is None:
+            raise RuntimeError("File not opened")
+
+        data, indices, indptr = _load_csr_matrix_components(
+            self._file, 
+            start_row, 
+            n_rows, 
+            valid_indices
+        )
+
+        # Create sparse matrix with appropriate shape
+        n_cols = len(valid_indices) if valid_indices is not None else len(self._var_df)
+        X_subset = sparse.csr_matrix(
+            (data, indices, indptr), 
+            shape=(n_rows, n_cols)
+        )
+
+        # Subset the obs DataFrame for the requested rows
+        obs_subset = self._obs_df.iloc[start_row:start_row + n_rows]
+        
+        # Filter var DataFrame if needed
+        var_df = self._var_df.iloc[valid_indices] if valid_indices is not None else self._var_df
+
+        return ad.AnnData(X=X_subset, obs=obs_subset, var=var_df)
+
+    def load_torch_csr_matrix(self, start_row, n_rows, valid_indices=None):
+        """
+        Load a subset of rows from the h5ad file as a torch CSR matrix.
+        """
+        if self._file is None:
+            raise RuntimeError("File not opened")
+            
+        data, indices, indptr = _load_csr_matrix_components(self._file, start_row, n_rows, valid_indices)
+        # Convert to float32 and ensure indices are long
+        data = torch.from_numpy(data).float()
+        indices = torch.from_numpy(indices).long()
+        indptr = torch.from_numpy(indptr).long()
+        
+        # Use the filtered number of columns when valid_indices is provided
+        n_cols = len(valid_indices) if valid_indices is not None else len(self._var_df)
+        return torch.sparse_csr_tensor(indptr, indices, data, (n_rows, n_cols))
+
+    @property
+    def is_open(self):
+        """Check if the file is currently open."""
+        return self._file is not None
+
+
 def load_subset_anndata(file_path, start_row=0, n_rows=None, obs_columns=None):
     """
     Load a subset of rows from an h5ad file as an AnnData object efficiently.
@@ -248,15 +446,60 @@ def load_subset_anndata(file_path, start_row=0, n_rows=None, obs_columns=None):
     return ad.AnnData(X=X_subset, obs=obs_df, var=var_df)
 
 
-def _load_csr_matrix_components(f, start_row, n_rows):
-    """Helper function to load CSR matrix components from h5ad file."""
+def _get_matrix_n_cols(f):
+    """
+    Helper function to get the number of columns from an h5ad file matrix.
+    
+    Args:
+        f: h5py File object
+    
+    Returns:
+        int: Number of columns in the matrix
+        
+    Raises:
+        KeyError: If neither 'X' nor 'raw/X' dataset is found in the H5AD file
+    """
+    if "X" in f:
+        if isinstance(f["X"], h5py.Dataset):
+            return f["X"].shape[1]
+        else:  # It's a group containing CSR matrix data
+            return f["X"].attrs["shape"][1]
+    elif "raw/X" in f:
+        if isinstance(f["raw/X"], h5py.Dataset):
+            return f["raw/X"].shape[1]
+        else:
+            return f["raw/X"].attrs["shape"][1]
+    else:
+        raise KeyError("Could not find 'X' dataset in the H5AD file.")
+
+def _load_csr_matrix_components(f, start_row, n_rows, valid_indices=None):
+    """
+    Helper function to load CSR matrix components from h5ad file.
+    
+    Args:
+        f: h5py File object
+        start_row: Starting row index
+        n_rows: Number of rows to load
+        valid_indices: Optional list of column indices to keep
+    """
+    # Load the basic CSR components
     indptr = f["X"]["indptr"][start_row : start_row + n_rows + 1]
     start_idx, end_idx = indptr[0], indptr[-1]
-
-    data = f["X"]["data"][start_idx:end_idx]
     indices = f["X"]["indices"][start_idx:end_idx]
-    indptr = indptr - start_idx  # Adjust indptr to start at 0
-
+    data = f["X"]["data"][start_idx:end_idx]
+    
+    # Adjust indptr relative to start_idx
+    indptr = indptr - start_idx
+    
+    if valid_indices is not None:
+        n_cols = _get_matrix_n_cols(f)
+        mat = sparse.csr_matrix((data, indices, indptr), shape=(n_rows, n_cols))
+        
+        # Get columns to keep
+        mat = mat[:, valid_indices]
+        
+        return mat.data, mat.indices, mat.indptr
+        
     return data, indices, indptr
 
 
