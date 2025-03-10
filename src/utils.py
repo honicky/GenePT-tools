@@ -185,7 +185,8 @@ def _setup_huggingface_models(data_dir):
         "embedding_original_large_3.parquet",
         "embedding_associations_age_cell_type_drugs_pathways_openai_large.parquet",
         "embedding_associations_age_drugs_pathways_openai_large.parquet",
-        "embedding_associations_cell_type_openai_large.parquet"
+        "embedding_associations_cell_type_openai_large.parquet",
+        "embedding_associations_cell_type_tissue_drug_pathway_openai_large.parquet",
     ]
 
     for filename in huggingface_model_files:
