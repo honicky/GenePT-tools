@@ -153,4 +153,80 @@ def test_property_access(temp_h5ad_file):
     # Test access when file is open
     with chunker:
         assert isinstance(chunker.obs, pd.DataFrame)
-        assert isinstance(chunker.var, pd.DataFrame) 
+        assert isinstance(chunker.var, pd.DataFrame)
+
+def test_iter_chunks(temp_h5ad_file):
+    """Test the iter_chunks method of AnnDataChunker."""
+    with AnnDataChunker(temp_h5ad_file, ['cell_type', 'condition']) as chunker:
+        chunk_size = 30
+        
+        # Get original data for comparison
+        full_data = chunker.load_subset(0, len(chunker.obs))
+        total_rows = len(chunker.obs)
+        
+        # Collect all chunks
+        chunks = list(chunker.iter_chunks(chunk_size))
+        
+        # Test number of chunks
+        expected_num_chunks = (total_rows + chunk_size - 1) // chunk_size
+        assert len(chunks) == expected_num_chunks
+        
+        # Test chunk sizes and total rows
+        total_rows_in_chunks = 0
+        for i, chunk in enumerate(chunks):
+            if i < len(chunks) - 1:
+                # All chunks except the last should be full size
+                assert chunk.n_obs == chunk_size
+            else:
+                # Last chunk might be smaller
+                expected_last_chunk_size = total_rows - (i * chunk_size)
+                assert chunk.n_obs == expected_last_chunk_size
+            total_rows_in_chunks += chunk.n_obs
+        
+        # Verify total number of rows
+        assert total_rows_in_chunks == total_rows
+        
+        # Test concatenated data matches original
+        concatenated = ad.concat(chunks, join='outer')
+        assert concatenated.n_obs == full_data.n_obs
+        assert concatenated.n_vars == full_data.n_vars
+        
+        # Check that obs data matches
+        for col in ['cell_type', 'condition']:
+            pd.testing.assert_series_equal(
+                concatenated.obs[col],
+                full_data.obs[col],
+                check_names=False
+            )
+        
+        # Test that sparse matrix data matches
+        assert np.allclose(
+            concatenated.X.toarray(),
+            full_data.X.toarray()
+        )
+
+def test_iter_chunks_edge_cases(temp_h5ad_file):
+    """Test iter_chunks with edge cases."""
+    with AnnDataChunker(temp_h5ad_file, ['cell_type']) as chunker:
+        total_rows = len(chunker.obs)
+        
+        # Test chunk_size = 1
+        chunks = list(chunker.iter_chunks(1))
+        assert len(chunks) == total_rows
+        assert all(chunk.n_obs == 1 for chunk in chunks)
+        
+        # Test chunk_size = total_rows
+        chunks = list(chunker.iter_chunks(total_rows))
+        assert len(chunks) == 1
+        assert chunks[0].n_obs == total_rows
+        
+        # Test invalid chunk sizes
+        with pytest.raises(ValueError):
+            list(chunker.iter_chunks(0))
+        with pytest.raises(ValueError):
+            list(chunker.iter_chunks(-1))
+        
+        # Test with closed file
+        chunker.close()
+        with pytest.raises(RuntimeError):
+            list(chunker.iter_chunks(10)) 

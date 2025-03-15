@@ -11,8 +11,6 @@ import pandas as pd
 import requests
 from scipy import sparse
 import torch
-import numpy as np
-
 
 def download_file(
     url: str, output_path: Union[Path, str, None] = None, chunk_size: int = 8192
@@ -275,6 +273,12 @@ class AnnDataChunker:
         self._file = None
         self._obs_df = None
         self._var_df = None
+        self._total_rows = None
+
+    def __len__(self):
+        if self._total_rows is None:
+            raise RuntimeError("File not opened. Use 'with' statement or call open() first")
+        return self._total_rows
 
     def _load_obs_metadata(self, f, obs_columns=None):
         """Helper function to load all observation (cell) metadata."""
@@ -307,6 +311,8 @@ class AnnDataChunker:
             self._file = h5py.File(self.file_path, "r")
             self._obs_df = self._load_obs_metadata(self._file, self.obs_columns)  # Using class method
             self._var_df = _load_var_metadata(self._file)
+            self._total_rows = len(self._obs_df)
+
         return self
 
     def close(self):
@@ -344,6 +350,7 @@ class AnnDataChunker:
         if self._var_df is None:
             raise RuntimeError("File not opened")
         return self._var_df
+    
 
     def load_subset(self, start_row, n_rows, valid_indices=None):
         """
@@ -413,6 +420,39 @@ class AnnDataChunker:
     def is_open(self):
         """Check if the file is currently open."""
         return self._file is not None
+
+    def iter_chunks(self, chunk_size, valid_indices=None):
+        """
+        Iterator that yields chunks of the AnnData object.
+        
+        Args:
+            chunk_size: Number of rows to include in each chunk
+            
+        Yields:
+            AnnData: Chunk of the data with chunk_size rows (or fewer for the last chunk)
+            
+        Raises:
+            RuntimeError: If the file is not opened
+        """
+        if self._file is None:
+            raise RuntimeError("File not opened. Use 'with' statement or call open() first")
+            
+        if not isinstance(chunk_size, int) or chunk_size <= 0:
+            raise ValueError("chunk_size must be a positive integer")
+            
+        total_rows = len(self._obs_df)
+        start_row = 0
+        
+        while start_row < total_rows:
+            # Calculate the actual chunk size (might be smaller for the last chunk)
+            current_chunk_size = min(chunk_size, total_rows - start_row)
+            
+            # Load and yield the chunk
+            chunk = self.load_subset(start_row, current_chunk_size, valid_indices=valid_indices)
+            yield chunk
+            
+            # Move to next chunk
+            start_row += chunk_size
 
 
 def load_subset_anndata(file_path, start_row=0, n_rows=None, obs_columns=None):
@@ -555,3 +595,18 @@ def _load_obs_metadata(f, start_row, n_rows, obs_columns=None):
             obs_dict[key] = pd.Categorical.from_codes(codes, categories=categories)
 
     return pd.DataFrame(obs_dict)
+
+
+def print_memory_stats():
+    """Print memory statistics for CPU and GPU if available"""
+    # CPU Memory
+    print("\n=== Memory Usage ===")
+    print(f"CPU Memory: Reserved memory in PyTorch: {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+    
+    # GPU Memory (if available)
+    if torch.cuda.is_available():
+        print("\n=== GPU Memory ===")
+        print(f"Total GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**2:.2f} MB")
+        print(f"Reserved GPU Memory: {torch.cuda.memory_reserved(0) / 1024**2:.2f} MB")
+        print(f"Allocated GPU Memory: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
+        print(f"Cached GPU Memory: {torch.cuda.memory_reserved(0) - torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
