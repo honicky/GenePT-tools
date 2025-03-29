@@ -1,43 +1,53 @@
 import numpy as np
 import torch
 
-def _get_embedding_indices(merged_embeddings, major_ensembl_ids):
+def _get_embedding_indices(merged_embeddings, selected_gene_ids, id_column=None):
     """
     Helper function to get embedding indices and valid indices for both numpy and torch versions.
 
     Args:
-        merged_embeddings (pd.DataFrame): DataFrame containing gene embeddings with 'ensembl_id' column
-        major_ensembl_ids (pd.Series): Series of Ensembl IDs in the order they appear in expression matrix
+        merged_embeddings (pd.DataFrame): DataFrame containing gene embeddings
+        selected_gene_ids (pd.Series): Series of Ensembl IDs in the order they appear in expression matrix
+        id_column (str, optional): Column name containing gene IDs. If None, uses DataFrame index.
 
     Returns:
         tuple: (embedding_cols, valid_indices, embedding_indices)
     """
-    # Get the embedding values without the metadata columns
+    # Get the embedding values columns (must be non-negative integers)
     embedding_cols = [
-        col for col in merged_embeddings.columns if col not in ["ensembl_id"]
+        col for col in merged_embeddings.columns 
+        if str(col).isdigit() and int(col) >= 0
     ]
 
-    # Create a mapping from major_ensembl_ids to column indices in cell_gene_matrix
-    gene_idx_map = {gene_id: idx for idx, gene_id in enumerate(major_ensembl_ids)}
+    # Get the gene IDs either from the specified column or index
+    gene_ids = (
+        merged_embeddings[id_column]
+        if id_column is not None 
+        else merged_embeddings.index
+    )
 
-    # Find which embeddings correspond to genes in our expression matrix
-    # and get their indices in the correct order
+    # Create a mapping from gene IDs to their position in merged_embeddings
+    gene_pos_map = {gene_id: idx for idx, gene_id in enumerate(gene_ids)}
+    
+    # Find which genes in selected_gene_ids exist in our embeddings
     valid_indices = []
     embedding_indices = []
-    for i, ensembl_id in enumerate(merged_embeddings.ensembl_id):
-        if ensembl_id in gene_idx_map:
-            valid_indices.append(gene_idx_map[ensembl_id])
-            embedding_indices.append(i)
+    
+    for idx, gene_id in enumerate(selected_gene_ids):
+        if gene_id in gene_pos_map:
+            valid_indices.append(idx)
+            embedding_indices.append(gene_pos_map[gene_id])
 
     return embedding_cols, valid_indices, embedding_indices
 
-def create_embedding_matrix(merged_embeddings, major_ensembl_ids):
+def create_embedding_matrix(merged_embeddings, selected_gene_ids, id_column=None):
     """
     Create a reordered embedding matrix that aligns gene embeddings with expression matrix columns.
 
     Args:
-        merged_embeddings (pd.DataFrame): DataFrame containing gene embeddings with 'ensembl_id' column
-        major_ensembl_ids (pd.Series): Series of Ensembl IDs in the order they appear in expression matrix
+        merged_embeddings (pd.DataFrame): DataFrame containing gene embeddings
+        selected_gene_ids (pd.Series): Series of Ensembl IDs in the order they appear in expression matrix
+        id_column (str, optional): Column name containing gene IDs. If None, uses DataFrame index.
 
     Returns:
         tuple: (embedding_matrix, valid_indices)
@@ -45,7 +55,7 @@ def create_embedding_matrix(merged_embeddings, major_ensembl_ids):
             - valid_indices: list of indices mapping to original expression matrix columns
     """
     embedding_cols, valid_indices, embedding_indices = _get_embedding_indices(
-        merged_embeddings, major_ensembl_ids
+        merged_embeddings, selected_gene_ids, id_column
     )
     
     # Create the reordered embedding matrix
@@ -55,15 +65,16 @@ def create_embedding_matrix(merged_embeddings, major_ensembl_ids):
 
     return embedding_matrix, valid_indices
 
-def create_embedding_matrix_torch(merged_embeddings, major_ensembl_ids, device='cpu'):
+def create_embedding_matrix_torch(merged_embeddings, selected_gene_ids, device='cpu', id_column=None):
     """
     Create a reordered embedding matrix that aligns gene embeddings with expression matrix columns.
     PyTorch version that returns a torch.Tensor.
 
     Args:
-        merged_embeddings (pd.DataFrame): DataFrame containing gene embeddings with 'ensembl_id' column
-        major_ensembl_ids (pd.Series): Series of Ensembl IDs in the order they appear in expression matrix
+        merged_embeddings (pd.DataFrame): DataFrame containing gene embeddings
+        selected_gene_ids (pd.Series): Series of Ensembl IDs in the order they appear in expression matrix
         device (str or torch.device): Device to place the tensor on ('cpu' or 'cuda')
+        id_column (str, optional): Column name containing gene IDs. If None, uses DataFrame index.
 
     Returns:
         tuple: (embedding_matrix, valid_indices)
@@ -71,7 +82,7 @@ def create_embedding_matrix_torch(merged_embeddings, major_ensembl_ids, device='
             - valid_indices: list of indices mapping to original expression matrix columns
     """
     embedding_cols, valid_indices, embedding_indices = _get_embedding_indices(
-        merged_embeddings, major_ensembl_ids
+        merged_embeddings, selected_gene_ids, id_column
     )
 
     # Create the reordered embedding matrix as a PyTorch tensor on specified device
