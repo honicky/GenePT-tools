@@ -72,7 +72,7 @@ def create_embedding_matrix_torch(merged_embeddings, selected_gene_ids, device='
 
     Args:
         merged_embeddings (pd.DataFrame): DataFrame containing gene embeddings
-        selected_gene_ids (pd.Series): Series of Ensembl IDs in the order they appear in expression matrix
+        selected_gene_ids (pd.Series): Series of Ensembl/Gene IDs in the order they appear in expression matrix
         device (str or torch.device): Device to place the tensor on ('cpu' or 'cuda')
         id_column (str, optional): Column name containing gene IDs. If None, uses DataFrame index.
 

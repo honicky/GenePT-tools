@@ -229,4 +229,71 @@ def test_iter_chunks_edge_cases(temp_h5ad_file):
         # Test with closed file
         chunker.close()
         with pytest.raises(RuntimeError):
-            list(chunker.iter_chunks(10)) 
+            list(chunker.iter_chunks(10))
+
+def test_anndata_chunker_with_file_object(temp_h5ad_file):
+    """Test AnnDataChunker with a file-like object."""
+    # Test with an opened file object
+    with open(temp_h5ad_file, 'rb') as file_obj:
+        chunker = AnnDataChunker(file_obj, ['cell_type', 'condition'])
+        assert not chunker._owns_file  # Should not own the file
+        assert chunker.file_path_or_obj == file_obj
+        
+        # Test that we can use the chunker with the file object
+        with chunker:
+            assert chunker.is_open
+            subset = chunker.load_subset(start_row=0, n_rows=10)
+            assert subset.n_obs == 10
+            assert 'cell_type' in subset.obs.columns
+        
+        # File should still be open since we didn't own it
+        assert not file_obj.closed
+
+def test_anndata_chunker_context_nesting(temp_h5ad_file):
+    """Test nested context managers with file-like object."""
+    with open(temp_h5ad_file, 'rb') as file_obj:
+        with AnnDataChunker(file_obj, ['cell_type']) as chunker:
+            assert chunker.is_open
+            # Test basic functionality
+            subset = chunker.load_subset(start_row=0, n_rows=5)
+            assert subset.n_obs == 5
+            
+        # Chunker should be closed but not the file
+        assert not chunker.is_open
+        assert not file_obj.closed
+    # Now the file should be closed
+    assert file_obj.closed
+
+def test_anndata_chunker_file_ownership(temp_h5ad_file):
+    """Test file ownership behavior with different initialization methods."""
+    # Test with path (should own file)
+    chunker_path = AnnDataChunker(temp_h5ad_file, None)
+    assert chunker_path._owns_file
+    
+    # Test with file object (should not own file)
+    with open(temp_h5ad_file, 'rb') as file_obj:
+        chunker_file = AnnDataChunker(file_obj, None)
+        assert not chunker_file._owns_file
+        
+        # Test operations with non-owned file
+        chunker_file.open()
+        assert chunker_file.is_open
+        chunker_file.close()
+        assert not chunker_file.is_open
+        assert not file_obj.closed  # Should not close the file we don't own
+
+def test_anndata_chunker_iter_chunks_with_file_object(temp_h5ad_file):
+    """Test iter_chunks method with a file-like object."""
+    with open(temp_h5ad_file, 'rb') as file_obj:
+        with AnnDataChunker(file_obj, ['cell_type']) as chunker:
+            chunk_size = 30
+            chunks = list(chunker.iter_chunks(chunk_size))
+            
+            # Basic checks
+            assert len(chunks) > 0
+            assert all(isinstance(chunk, ad.AnnData) for chunk in chunks)
+            assert all('cell_type' in chunk.obs.columns for chunk in chunks)
+            
+            # Check total rows
+            total_rows = sum(chunk.n_obs for chunk in chunks)
+            assert total_rows == len(chunker.obs) 

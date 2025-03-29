@@ -252,28 +252,35 @@ class AnnDataChunker:
     
     Parameters
     ----------
-    file_path : str or Path
-        Path to the h5ad file
+    file_path_or_obj : str, Path, or file-like object
+        Path to the h5ad file or a file-like object already opened in read mode
     obs_columns : list of str or None
         List of observation columns to load. If None, loads all columns.
     
     Examples
     --------
+    # Using with file path
     >>> with AnnDataChunker('data.h5ad', ['cell_type', 'condition']) as chunker:
     ...     chunk = chunker.load_subset(start_row=0, n_rows=1000)
+    
+    # Using with file-like object
+    >>> with open('data.h5ad', 'rb') as f:
+    ...     with AnnDataChunker(f, ['cell_type', 'condition']) as chunker:
+    ...         chunk = chunker.load_subset(start_row=0, n_rows=1000)
     """
-    def __init__(self, file_path, obs_columns):
-        if not isinstance(file_path, (str, Path)):
-            raise TypeError("file_path must be a string or Path object")
+    def __init__(self, file_path_or_obj, obs_columns):
+        if not isinstance(file_path_or_obj, (str, Path)) and not hasattr(file_path_or_obj, 'read'):
+            raise TypeError("file_path_or_obj must be a string, Path object, or file-like object")
         if obs_columns is not None and not isinstance(obs_columns, (list, tuple)):
             raise TypeError("obs_columns must be None or a list/tuple of strings")
         
-        self.file_path = Path(file_path)
+        self.file_path_or_obj = file_path_or_obj
         self.obs_columns = obs_columns
         self._file = None
         self._obs_df = None
         self._var_df = None
         self._total_rows = None
+        self._owns_file = isinstance(file_path_or_obj, (str, Path))
 
     def __len__(self):
         if self._total_rows is None:
@@ -308,8 +315,12 @@ class AnnDataChunker:
         Returns self for method chaining.
         """
         if self._file is None:
-            self._file = h5py.File(self.file_path, "r")
-            self._obs_df = self._load_obs_metadata(self._file, self.obs_columns)  # Using class method
+            if self._owns_file:
+                self._file = h5py.File(self.file_path_or_obj, "r")
+            else:
+                self._file = h5py.File(self.file_path_or_obj)
+            
+            self._obs_df = self._load_obs_metadata(self._file, self.obs_columns)
             self._var_df = _load_var_metadata(self._file)
             self._total_rows = len(self._obs_df)
 
@@ -317,15 +328,15 @@ class AnnDataChunker:
 
     def close(self):
         """
-        Close the h5py file.
+        Close the h5py file if we own it.
         """
-        if self._file is not None:
+        if self._file is not None and self._owns_file:
             self._file.close()
-            self._file = None
-            del self._obs_df
-            del self._var_df
-            self._obs_df = None
-            self._var_df = None
+        self._file = None
+        del self._obs_df
+        del self._var_df
+        self._obs_df = None
+        self._var_df = None
 
     def __enter__(self):
         """
