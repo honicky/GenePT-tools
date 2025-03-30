@@ -275,17 +275,30 @@ class AnnDataChunker:
             raise TypeError("obs_columns must be None or a list/tuple of strings")
         
         self.file_path_or_obj = file_path_or_obj
-        self.obs_columns = obs_columns
+        self.obs_columns = obs_columns if obs_columns is not None else []
         self._file = None
         self._obs_df = None
         self._var_df = None
         self._total_rows = None
+        self._index_column = None
         self._owns_file = isinstance(file_path_or_obj, (str, Path))
 
     def __len__(self):
         if self._total_rows is None:
             raise RuntimeError("File not opened. Use 'with' statement or call open() first")
         return self._total_rows
+
+    def _load_index_column(self, f):
+        """Helper function to load the index column."""
+        self._index_column = (
+            f["obs"].attrs["_index"]
+            if "_index" in f["obs"].attrs
+            else f["obs"].attrs["index"]
+            if "index" in f["obs"].attrs
+            else "_index"
+        )
+
+        self.obs_columns = list(set(self.obs_columns).union(set([self._index_column])))
 
     def _load_obs_metadata(self, f, obs_columns=None):
         """Helper function to load all observation (cell) metadata."""
@@ -307,7 +320,7 @@ class AnnDataChunker:
                 codes = item["codes"][:]  # Load all codes
                 obs_dict[key] = pd.Categorical.from_codes(codes, categories=categories)
 
-        return pd.DataFrame(obs_dict)
+        return pd.DataFrame(obs_dict).set_index(self._index_column)
 
     def open(self):
         """
@@ -320,6 +333,7 @@ class AnnDataChunker:
             else:
                 self._file = h5py.File(self.file_path_or_obj)
             
+            self._load_index_column(self._file)
             self._obs_df = self._load_obs_metadata(self._file, self.obs_columns)
             self._var_df = _load_var_metadata(self._file)
             self._total_rows = len(self._obs_df)
