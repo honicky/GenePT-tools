@@ -2,12 +2,13 @@
 name = "genept-tools"
 version = "0.1.0"
 description = "Your project description"
-requires-python = ">=3.9"
 dependencies = [
     "anndata",
+    "boto3",
     "dash",
     "datasets",
     "ipykernel",
+    "latch",
     "lightgbm",
     "matplotlib",
     "nbformat",
@@ -28,6 +29,7 @@ dev = [
     "pytest",
     "black[jupyter]",
     "isort",
+    "ipykernel",
 ]
 
 [tool.pytest.ini_options]
