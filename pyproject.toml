@@ -5,31 +5,31 @@ description = "Your project description"
 dependencies = [
     "anndata",
     "boto3",
-    "dash",
     "datasets",
-    "ipykernel",
-    "latch",
     "lightgbm",
-    "matplotlib",
     "nbformat",
     "numpy",
     "openai",
     "pandas",
-    "plotly",
     "scanpy",
     "scikit-learn",
-    "seaborn",
-    "torch==2.4.0",
     "umap-learn",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pip-tools",
-    "pytest",
+    "matplotlib",
+    "seaborn",
     "black[jupyter]",
     "isort",
     "ipykernel",
+    "pip-tools",
+    "plotly",
+    "pytest",
+]
+
+with_torch = [
+    "torch==2.4.0",
 ]
 
 [tool.pytest.ini_options]
