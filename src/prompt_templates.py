@@ -1,4 +1,3 @@
-
 NCBI_UNIPROT_ASSOCIATED_AGEING_DRUG_PATHWAY_PROMPT_V1 = """Tell me about the {0} gene.
 
 Here is the NCBI and UniProt summary of the gene:

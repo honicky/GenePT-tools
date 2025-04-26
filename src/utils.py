@@ -12,6 +12,7 @@ import requests
 from scipy import sparse
 import torch
 
+
 def download_file(
     url: str, output_path: Union[Path, str, None] = None, chunk_size: int = 8192
 ) -> Path:
@@ -170,13 +171,16 @@ def setup_data_dir():
     _setup_huggingface_models(data_dir)
     print("Setup finished!")
 
+
 def _setup_huggingface_models(data_dir):
     """
     Set up the huggingface models by downloading and extracting required files.
     """
     huggingface_model_name = "honicky/genept-composable-embeddings"
-    huggingface_model_url_prefix = f"https://huggingface.co/{huggingface_model_name}/resolve/main/"
-    
+    huggingface_model_url_prefix = (
+        f"https://huggingface.co/{huggingface_model_name}/resolve/main/"
+    )
+
     # Known list of model files
     huggingface_model_files = [
         "embedding_original_ada_text.parquet",
@@ -195,7 +199,7 @@ def _setup_huggingface_models(data_dir):
             try:
                 download_file(
                     huggingface_model_url_prefix + filename + "?download=true",
-                    file_path
+                    file_path,
                 )
             except Exception as e:
                 print(f"Failed to download {filename}: {str(e)}")
@@ -249,31 +253,36 @@ def download_gdrive_file(url: str, output_path: Union[Path, str]) -> Path:
 class AnnDataChunker:
     """
     A class for loading a subset of an AnnData object from an h5ad file for use in multi-core processing.
-    
+
     Parameters
     ----------
     file_path_or_obj : str, Path, or file-like object
         Path to the h5ad file or a file-like object already opened in read mode
     obs_columns : list of str or None
         List of observation columns to load. If None, loads all columns.
-    
+
     Examples
     --------
     # Using with file path
     >>> with AnnDataChunker('data.h5ad', ['cell_type', 'condition']) as chunker:
     ...     chunk = chunker.load_subset(start_row=0, n_rows=1000)
-    
+
     # Using with file-like object
     >>> with open('data.h5ad', 'rb') as f:
     ...     with AnnDataChunker(f, ['cell_type', 'condition']) as chunker:
     ...         chunk = chunker.load_subset(start_row=0, n_rows=1000)
     """
+
     def __init__(self, file_path_or_obj, obs_columns):
-        if not isinstance(file_path_or_obj, (str, Path)) and not hasattr(file_path_or_obj, 'read'):
-            raise TypeError("file_path_or_obj must be a string, Path object, or file-like object")
+        if not isinstance(file_path_or_obj, (str, Path)) and not hasattr(
+            file_path_or_obj, "read"
+        ):
+            raise TypeError(
+                "file_path_or_obj must be a string, Path object, or file-like object"
+            )
         if obs_columns is not None and not isinstance(obs_columns, (list, tuple)):
             raise TypeError("obs_columns must be None or a list/tuple of strings")
-        
+
         self.file_path_or_obj = file_path_or_obj
         self.obs_columns = obs_columns if obs_columns is not None else []
         self._file = None
@@ -285,7 +294,9 @@ class AnnDataChunker:
 
     def __len__(self):
         if self._total_rows is None:
-            raise RuntimeError("File not opened. Use 'with' statement or call open() first")
+            raise RuntimeError(
+                "File not opened. Use 'with' statement or call open() first"
+            )
         return self._total_rows
 
     def _load_index_column(self, f):
@@ -293,9 +304,7 @@ class AnnDataChunker:
         self._index_column = (
             f["obs"].attrs["_index"]
             if "_index" in f["obs"].attrs
-            else f["obs"].attrs["index"]
-            if "index" in f["obs"].attrs
-            else "_index"
+            else f["obs"].attrs["index"] if "index" in f["obs"].attrs else "_index"
         )
 
         self.obs_columns = list(set(self.obs_columns).union(set([self._index_column])))
@@ -312,7 +321,11 @@ class AnnDataChunker:
             item = f["obs"][key]
             if isinstance(item, h5py.Dataset):
                 obs_dict[key] = item[:]  # Load entire array
-            elif isinstance(item, h5py.Group) and "categories" in item and "codes" in item:
+            elif (
+                isinstance(item, h5py.Group)
+                and "categories" in item
+                and "codes" in item
+            ):
                 categories = [
                     cat.decode("utf-8") if isinstance(cat, bytes) else cat
                     for cat in item["categories"][:]
@@ -332,7 +345,7 @@ class AnnDataChunker:
                 self._file = h5py.File(self.file_path_or_obj, "r")
             else:
                 self._file = h5py.File(self.file_path_or_obj)
-            
+
             self._load_index_column(self._file)
             self._obs_df = self._load_obs_metadata(self._file, self.obs_columns)
             self._var_df = _load_var_metadata(self._file)
@@ -375,7 +388,6 @@ class AnnDataChunker:
         if self._var_df is None:
             raise RuntimeError("File not opened")
         return self._var_df
-    
 
     def load_subset(self, start_row, n_rows, valid_indices=None):
         """
@@ -391,36 +403,38 @@ class AnnDataChunker:
             raise ValueError("start_row must be a non-negative integer")
         if not isinstance(n_rows, int) or n_rows <= 0:
             raise ValueError("n_rows must be a positive integer")
-            
+
         total_rows = len(self._obs_df)
         if start_row >= total_rows:
-            raise ValueError(f"start_row ({start_row}) exceeds total rows ({total_rows})")
+            raise ValueError(
+                f"start_row ({start_row}) exceeds total rows ({total_rows})"
+            )
         if start_row + n_rows > total_rows:
             n_rows = total_rows - start_row
-            print(f"Warning: Requested rows exceed total rows. Adjusting n_rows to {n_rows}")
-        
+            print(
+                f"Warning: Requested rows exceed total rows. Adjusting n_rows to {n_rows}"
+            )
+
         if self._file is None:
             raise RuntimeError("File not opened")
 
         data, indices, indptr = _load_csr_matrix_components(
-            self._file, 
-            start_row, 
-            n_rows, 
-            valid_indices
+            self._file, start_row, n_rows, valid_indices
         )
 
         # Create sparse matrix with appropriate shape
         n_cols = len(valid_indices) if valid_indices is not None else len(self._var_df)
-        X_subset = sparse.csr_matrix(
-            (data, indices, indptr), 
-            shape=(n_rows, n_cols)
-        )
+        X_subset = sparse.csr_matrix((data, indices, indptr), shape=(n_rows, n_cols))
 
         # Subset the obs DataFrame for the requested rows
-        obs_subset = self._obs_df.iloc[start_row:start_row + n_rows]
-        
+        obs_subset = self._obs_df.iloc[start_row : start_row + n_rows]
+
         # Filter var DataFrame if needed
-        var_df = self._var_df.iloc[valid_indices] if valid_indices is not None else self._var_df
+        var_df = (
+            self._var_df.iloc[valid_indices]
+            if valid_indices is not None
+            else self._var_df
+        )
 
         return ad.AnnData(X=X_subset, obs=obs_subset, var=var_df)
 
@@ -430,13 +444,15 @@ class AnnDataChunker:
         """
         if self._file is None:
             raise RuntimeError("File not opened")
-            
-        data, indices, indptr = _load_csr_matrix_components(self._file, start_row, n_rows, valid_indices)
+
+        data, indices, indptr = _load_csr_matrix_components(
+            self._file, start_row, n_rows, valid_indices
+        )
         # Convert to float32 and ensure indices are long
         data = torch.from_numpy(data).float()
         indices = torch.from_numpy(indices).long()
         indptr = torch.from_numpy(indptr).long()
-        
+
         # Use the filtered number of columns when valid_indices is provided
         n_cols = len(valid_indices) if valid_indices is not None else len(self._var_df)
         return torch.sparse_csr_tensor(indptr, indices, data, (n_rows, n_cols))
@@ -449,33 +465,37 @@ class AnnDataChunker:
     def iter_chunks(self, chunk_size, valid_indices=None):
         """
         Iterator that yields chunks of the AnnData object.
-        
+
         Args:
             chunk_size: Number of rows to include in each chunk
-            
+
         Yields:
             AnnData: Chunk of the data with chunk_size rows (or fewer for the last chunk)
-            
+
         Raises:
             RuntimeError: If the file is not opened
         """
         if self._file is None:
-            raise RuntimeError("File not opened. Use 'with' statement or call open() first")
-            
+            raise RuntimeError(
+                "File not opened. Use 'with' statement or call open() first"
+            )
+
         if not isinstance(chunk_size, int) or chunk_size <= 0:
             raise ValueError("chunk_size must be a positive integer")
-            
+
         total_rows = len(self._obs_df)
         start_row = 0
-        
+
         while start_row < total_rows:
             # Calculate the actual chunk size (might be smaller for the last chunk)
             current_chunk_size = min(chunk_size, total_rows - start_row)
-            
+
             # Load and yield the chunk
-            chunk = self.load_subset(start_row, current_chunk_size, valid_indices=valid_indices)
+            chunk = self.load_subset(
+                start_row, current_chunk_size, valid_indices=valid_indices
+            )
             yield chunk
-            
+
             # Move to next chunk
             start_row += chunk_size
 
@@ -515,13 +535,13 @@ def load_subset_anndata(file_path, start_row=0, n_rows=None, obs_columns=None):
 def _get_matrix_n_cols(f):
     """
     Helper function to get the number of columns from an h5ad file matrix.
-    
+
     Args:
         f: h5py File object
-    
+
     Returns:
         int: Number of columns in the matrix
-        
+
     Raises:
         KeyError: If neither 'X' nor 'raw/X' dataset is found in the H5AD file
     """
@@ -538,10 +558,11 @@ def _get_matrix_n_cols(f):
     else:
         raise KeyError("Could not find 'X' dataset in the H5AD file.")
 
+
 def _load_csr_matrix_components(f, start_row, n_rows, valid_indices=None):
     """
     Helper function to load CSR matrix components from h5ad file.
-    
+
     Args:
         f: h5py File object
         start_row: Starting row index
@@ -553,19 +574,19 @@ def _load_csr_matrix_components(f, start_row, n_rows, valid_indices=None):
     start_idx, end_idx = indptr[0], indptr[-1]
     indices = f["X"]["indices"][start_idx:end_idx]
     data = f["X"]["data"][start_idx:end_idx]
-    
+
     # Adjust indptr relative to start_idx
     indptr = indptr - start_idx
-    
+
     if valid_indices is not None:
         n_cols = _get_matrix_n_cols(f)
         mat = sparse.csr_matrix((data, indices, indptr), shape=(n_rows, n_cols))
-        
+
         # Get columns to keep
         mat = mat[:, valid_indices]
-        
+
         return mat.data, mat.indices, mat.indptr
-        
+
     return data, indices, indptr
 
 
@@ -626,12 +647,20 @@ def print_memory_stats():
     """Print memory statistics for CPU and GPU if available"""
     # CPU Memory
     print("\n=== Memory Usage ===")
-    print(f"CPU Memory: Reserved memory in PyTorch: {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
-    
+    print(
+        f"CPU Memory: Reserved memory in PyTorch: {torch.cuda.memory_reserved() / 1024**2:.2f} MB"
+    )
+
     # GPU Memory (if available)
     if torch.cuda.is_available():
         print("\n=== GPU Memory ===")
-        print(f"Total GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**2:.2f} MB")
+        print(
+            f"Total GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**2:.2f} MB"
+        )
         print(f"Reserved GPU Memory: {torch.cuda.memory_reserved(0) / 1024**2:.2f} MB")
-        print(f"Allocated GPU Memory: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
-        print(f"Cached GPU Memory: {torch.cuda.memory_reserved(0) - torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
+        print(
+            f"Allocated GPU Memory: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB"
+        )
+        print(
+            f"Cached GPU Memory: {torch.cuda.memory_reserved(0) - torch.cuda.memory_allocated(0) / 1024**2:.2f} MB"
+        )

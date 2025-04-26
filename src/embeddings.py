@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 from openai import OpenAI
 
+
 class BatchInfo:
     """
     A class to manage batch processing information for OpenAI API requests.
@@ -26,22 +27,33 @@ class BatchInfo:
         request_data (list[dict]): The actual request data to be processed
     """
 
-    def __init__(self,
+    def __init__(
+        self,
         batch_name: str,
         request_data: list[dict],
         batch_description: str,
-        data_dir: Path
+        data_dir: Path,
     ):
         self.batch_name = batch_name
         self.request_filename = f"{batch_name}_requests.jsonl"
-        self.request_file_path = str(data_dir / "generated" / "batch-requests" / self.request_filename)
+        self.request_file_path = str(
+            data_dir / "generated" / "batch-requests" / self.request_filename
+        )
         self.response_filename = f"{batch_name}_responses.jsonl"
-        self.response_file_path = str(data_dir / "generated" / "batch-requests" / self.response_filename)
+        self.response_file_path = str(
+            data_dir / "generated" / "batch-requests" / self.response_filename
+        )
         self.batch_description = batch_description
         self.request_data = request_data
         self.data_dir = data_dir
 
-def get_gene_text_batch_requests(summary_of_genes: dict, prompt_template: str, request_id_prefix: str, model: str = "gpt-4o-mini") -> list[dict]:
+
+def get_gene_text_batch_requests(
+    summary_of_genes: dict,
+    prompt_template: str,
+    request_id_prefix: str,
+    model: str = "gpt-4o-mini",
+) -> list[dict]:
     """
     Generate a list of batch request objects for processing gene summaries through OpenAI's API.
 
@@ -75,9 +87,7 @@ def get_gene_text_batch_requests(summary_of_genes: dict, prompt_template: str, r
                     },
                     {
                         "role": "user",
-                        "content": prompt_template.format(
-                            gene, summary_of_genes[gene]
-                        ),
+                        "content": prompt_template.format(gene, summary_of_genes[gene]),
                     },
                 ],
                 "max_tokens": 2000,
@@ -87,14 +97,18 @@ def get_gene_text_batch_requests(summary_of_genes: dict, prompt_template: str, r
     ]
 
 
-def get_gene_embedding_batch_requests(gene_descriptions_pdf: pd.DataFrame, request_id_prefix: str, model: str = "text-embedding-3-large") -> list[dict]:
-    
+def get_gene_embedding_batch_requests(
+    gene_descriptions_pdf: pd.DataFrame,
+    request_id_prefix: str,
+    model: str = "text-embedding-3-large",
+) -> list[dict]:
+
     prompt_template = """
     {0}
     
     {1}
     """
-    
+
     return [
         {
             "custom_id": f"full-batch-embedding-request-{i}",
@@ -102,14 +116,11 @@ def get_gene_embedding_batch_requests(gene_descriptions_pdf: pd.DataFrame, reque
             "url": "/v1/embeddings",
             "body": {
                 "model": model,
-                "input": prompt_template.format(
-                    row.description, row.gpt_response
-                ),
+                "input": prompt_template.format(row.description, row.gpt_response),
                 "encoding_format": "float",
             },
         }
         for i, (gene_name, row) in enumerate(gene_descriptions_pdf.iterrows())
-
     ]
 
 
@@ -128,11 +139,14 @@ def _create_batch_file(batch_info: BatchInfo, client: OpenAI) -> any:
         This function writes the batch requests to a JSONL file and uploads it to OpenAI
         for batch processing.
     """
-    output_path = write_batch_requests_jsonl(batch_info.request_data, batch_info.request_filename, batch_info.data_dir)
+    output_path = write_batch_requests_jsonl(
+        batch_info.request_data, batch_info.request_filename, batch_info.data_dir
+    )
     batch_input_filename = client.files.create(
         file=open(output_path, "rb"), purpose="batch"
     )
     return batch_input_filename
+
 
 def write_batch_requests_jsonl(requests: list, filename: str, data_dir: Path) -> Path:
     """
@@ -163,6 +177,7 @@ def write_batch_requests_jsonl(requests: list, filename: str, data_dir: Path) ->
 
     return output_path
 
+
 def create_batch_job(batch_info: BatchInfo, type: str, client: OpenAI) -> any:
     """
     Create a batch processing job using the OpenAI API.
@@ -186,7 +201,7 @@ def create_batch_job(batch_info: BatchInfo, type: str, client: OpenAI) -> any:
         endpoint = "/v1/embeddings"
     else:
         raise ValueError(f"Invalid batch type: {type}")
-    
+
     batch_input_file = _create_batch_file(batch_info, client)
     batch_job = client.batches.create(
         input_file_id=batch_input_file.id,
@@ -198,7 +213,9 @@ def create_batch_job(batch_info: BatchInfo, type: str, client: OpenAI) -> any:
     )
     return batch_job
 
+
 import time
+
 
 def monitor_batch_status(client, batch, check_interval=60, verbose=True):
     """
@@ -306,18 +323,18 @@ def load_batch_responses(batch_info: BatchInfo) -> list[dict]:
 
 
 def create_gene_descriptions_dataframe(
-        ncbi_uniprot_summary_of_genes: dict,
-        batch_responses: list[dict],
-        gene_info_table: pd.DataFrame,
-    ) -> pd.DataFrame:
+    ncbi_uniprot_summary_of_genes: dict,
+    batch_responses: list[dict],
+    gene_info_table: pd.DataFrame,
+) -> pd.DataFrame:
     """
     Create a DataFrame containing gene descriptions and their GPT responses.
-    
+
     Args:
         ncbi_uniprot_summary_of_genes (dict): Dictionary mapping gene names to their descriptions
         batch_responses (list): List of batch response objects from the API
         gene_info_table (pd.DataFrame): DataFrame mapping gene names to their ensembl gene ids and type information
-        
+
     Returns:
         pd.DataFrame: DataFrame with gene descriptions and GPT responses, indexed by gene name
     """
@@ -331,20 +348,15 @@ def create_gene_descriptions_dataframe(
 
     # Create the DataFrame
     gene_descriptions_pdf = pd.DataFrame(
-        {"description": descriptions, "gpt_response": gpt_responses}, 
-        index=gene_names
+        {"description": descriptions, "gpt_response": gpt_responses}, index=gene_names
     )
 
     # Rename the index
     gene_descriptions_pdf.index.name = "gene_name"
-    
+
     # Merge the gene descriptions with the gene info table
     gene_descriptions_pdf = gene_descriptions_pdf.merge(
-        gene_info_table,
-        left_index=True,
-        right_index=True,
-        how="left"
+        gene_info_table, left_index=True, right_index=True, how="left"
     )
 
     return gene_descriptions_pdf
-

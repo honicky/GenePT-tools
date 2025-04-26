@@ -1,10 +1,13 @@
 import numpy as np
+
 try:
     import torch
+
     _torch_available = True
 except ImportError:
     _torch_available = False
     pass
+
 
 def _get_embedding_indices(merged_embeddings, selected_gene_ids, id_column=None):
     """
@@ -20,30 +23,30 @@ def _get_embedding_indices(merged_embeddings, selected_gene_ids, id_column=None)
     """
     # Get the embedding values columns (must be non-negative integers)
     embedding_cols = [
-        col for col in merged_embeddings.columns 
-        if str(col).isdigit() and int(col) >= 0
+        col for col in merged_embeddings.columns if str(col).isdigit() and int(col) >= 0
     ]
 
     # Get the gene IDs either from the specified column or index
     gene_ids = (
         merged_embeddings[id_column]
-        if id_column is not None 
+        if id_column is not None
         else merged_embeddings.index
     )
 
     # Create a mapping from gene IDs to their position in merged_embeddings
     gene_pos_map = {gene_id: idx for idx, gene_id in enumerate(gene_ids)}
-    
+
     # Find which genes in selected_gene_ids exist in our embeddings
     valid_indices = []
     embedding_indices = []
-    
+
     for idx, gene_id in enumerate(selected_gene_ids):
         if gene_id in gene_pos_map:
             valid_indices.append(idx)
             embedding_indices.append(gene_pos_map[gene_id])
 
     return embedding_cols, valid_indices, embedding_indices
+
 
 def create_embedding_matrix(merged_embeddings, selected_gene_ids, id_column=None):
     """
@@ -62,7 +65,7 @@ def create_embedding_matrix(merged_embeddings, selected_gene_ids, id_column=None
     embedding_cols, valid_indices, embedding_indices = _get_embedding_indices(
         merged_embeddings, selected_gene_ids, id_column
     )
-    
+
     # Create the reordered embedding matrix
     embedding_matrix = (
         merged_embeddings[embedding_cols].iloc[embedding_indices].values.T
@@ -70,9 +73,13 @@ def create_embedding_matrix(merged_embeddings, selected_gene_ids, id_column=None
 
     return embedding_matrix, valid_indices
 
+
 # Only define torch-related functions if torch was successfully imported
 if _torch_available:
-    def create_embedding_matrix_torch(merged_embeddings, selected_gene_ids, device='cpu', id_column=None):
+
+    def create_embedding_matrix_torch(
+        merged_embeddings, selected_gene_ids, device="cpu", id_column=None
+    ):
         """
         Create a reordered embedding matrix that aligns gene embeddings with expression matrix columns.
         PyTorch version that returns a torch.Tensor.
@@ -96,12 +103,12 @@ if _torch_available:
         embedding_matrix = torch.tensor(
             merged_embeddings[embedding_cols].iloc[embedding_indices].values.T,
             dtype=torch.float32,
-            device=device
+            device=device,
         )
 
         return embedding_matrix, valid_indices
 
-    def create_cell_embeddings_torch(expression_matrix, embedding_matrix, device='cpu'):
+    def create_cell_embeddings_torch(expression_matrix, embedding_matrix, device="cpu"):
         """
         Create normalized cell embeddings using PyTorch operations.
 
@@ -118,15 +125,16 @@ if _torch_available:
             expression_matrix = expression_matrix.to(device)
         if embedding_matrix.device != device:
             embedding_matrix = embedding_matrix.to(device)
-        
+
         # Perform sparse matrix multiplication
-        cell_embeddings = torch.sparse.mm(expression_matrix,  embedding_matrix.T)
-        
+        cell_embeddings = torch.sparse.mm(expression_matrix, embedding_matrix.T)
+
         # Normalize the cell embeddings
         norms = torch.norm(cell_embeddings, dim=1, keepdim=True)
         cell_embeddings = cell_embeddings / norms
 
         return cell_embeddings
+
 
 def create_cell_embeddings(expression_matrix, embedding_matrix, valid_indices):
     """
