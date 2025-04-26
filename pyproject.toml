@@ -26,6 +26,7 @@ dev = [
     "pip-tools",
     "plotly",
     "pytest",
+    "yapf==0.40.2",
 ]
 
 with_torch = [
@@ -36,9 +37,12 @@ with_torch = [
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 
-[tool.black]
-line-length = 88
-target-version = ["py39"]
+[tool.yapf]
+based_on_style = "yapf"
+column_limit = 88
+continuation_indent_width = 2
+indent_width = 2
+
 
 [tool.isort]
 profile = "black"
