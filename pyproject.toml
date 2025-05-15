@@ -34,8 +34,26 @@ with_torch = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+addopts = "-v --ignore=.venv --ignore=__pycache__ -W ignore::DeprecationWarning"
+testpaths = ["test"]
 python_files = ["test_*.py"]
+norecursedirs = [
+    ".*",
+    "__pycache__",
+    "*.egg",
+    ".eggs",
+    "*.egg-info",
+    "dist",
+    "build",
+    ".env",
+    ".venv",
+    "venv",
+    "env",
+    "docs"
+]
+filterwarnings = [
+    "ignore:Transforming to str index:anndata._core.aligned_df.ImplicitModificationWarning",
+]
 
 [tool.yapf]
 based_on_style = "yapf"

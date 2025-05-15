@@ -1,16 +1,22 @@
 import gzip
+import os
 import pickle
 import zipfile
 from pathlib import Path
 from shutil import move
-from typing import Union
+from typing import Any, Union
 
 import anndata as ad
 import h5py
 import pandas as pd
 import requests
 from scipy import sparse
-import torch
+
+try:
+  import torch
+except ImportError:
+  pass
+import numpy as np
 
 
 def download_file(url: str,
@@ -270,7 +276,7 @@ class AnnDataChunker:
     ...         chunk = chunker.load_subset(start_row=0, n_rows=1000)
     """
 
-  def __init__(self, file_path_or_obj, obs_columns):
+  def __init__(self, file_path_or_obj, obs_columns=None):
     if not isinstance(file_path_or_obj,
                       (str, Path)) and not hasattr(file_path_or_obj, "read"):
       raise TypeError(
@@ -634,3 +640,109 @@ def print_memory_stats():
     print(
       f"Cached GPU Memory: {torch.cuda.memory_reserved(0) - torch.cuda.memory_allocated(0) / 1024**2:.2f} MB"
     )
+
+
+def _convert_to_python_types(obj: Any) -> Any:
+  """
+    Convert numpy types to native Python types for JSON serialization.
+    """
+  if isinstance(obj, np.integer):
+    return int(obj)
+  elif isinstance(obj, np.floating):
+    return float(obj)
+  elif isinstance(obj, np.ndarray):
+    return obj.tolist()
+  elif isinstance(obj, dict):
+    return {key: _convert_to_python_types(value) for key, value in obj.items()}
+  elif isinstance(obj, (list, tuple)):
+    return [_convert_to_python_types(item) for item in obj]
+  return obj
+
+
+def get_anndata_file_info(file_path: str) -> dict[str, Any]:
+  """
+    Extract information from an H5AD file and return it as a dictionary.
+    """
+  info = {}
+
+  # Get file size
+  info['file_size_gb'] = os.path.getsize(file_path) / 1e9
+
+  with h5py.File(file_path, 'r') as f:
+    # Main HDF5 groups
+    info['main_groups'] = list(f.keys())
+
+    # Expression matrix info
+    if 'X' in f:
+      x_components = list(f['X'].keys())
+      info['x_storage'] = {'components': x_components}
+
+      # Detect sparse matrix format
+      if all(comp in x_components for comp in ['data', 'indices', 'indptr']):
+        # Default to CSR unless we find evidence otherwise
+        format_type = 'CSR'
+
+        # Check format attribute if it exists
+        if 'format' in f['X'].attrs:
+          stored_format = f['X'].attrs['format']
+          if isinstance(stored_format, bytes):
+            stored_format = stored_format.decode('utf-8')
+          format_type = stored_format.upper()
+        else:
+          # If no format attribute, try to determine from shape
+          if 'shape' in f['X'].attrs:
+            matrix_shape = f['X'].attrs['shape']
+            n_rows = len(f['X']['indptr']) - 1
+            # If number of rows from indptr matches second dimension, it's likely CSC
+            if n_rows == matrix_shape[1]:
+              format_type = 'CSC'
+
+        info['x_storage']['format'] = format_type
+
+      elif all(comp in x_components for comp in ['data', 'row', 'col']):
+        info['x_storage']['format'] = 'COO'
+      else:
+        info['x_storage']['format'] = 'Dense' if 'data' in x_components else 'Unknown'
+
+      if 'data' in f['X']:
+        info['x_storage'].update({
+          'data_shape': tuple(int(x) for x in f['X']['data'].shape),
+          'dtype': str(f['X']['data'].dtype)
+        })
+
+        # Add shape information based on format
+        if info['x_storage']['format'] in ['CSR', 'CSC']:
+          info['x_storage'].update({
+            'indices_shape': tuple(int(x) for x in f['X']['indices'].shape),
+            'indptr_shape': tuple(int(x) for x in f['X']['indptr'].shape)
+          })
+          # Add matrix shape if available
+          if 'shape' in f['X'].attrs:
+            info['x_storage']['matrix_shape'] = tuple(
+              int(x) for x in f['X'].attrs['shape'])
+        elif info['x_storage']['format'] == 'COO':
+          info['x_storage'].update({
+            'row_shape': tuple(int(x) for x in f['X']['row'].shape),
+            'col_shape': tuple(int(x) for x in f['X']['col'].shape)
+          })
+
+        if hasattr(f['X']['data'], 'chunks'):
+          info['x_storage']['chunk_size'] = tuple(int(x) for x in f['X']['data'].chunks)
+
+    # Additional matrices
+    info['embeddings'] = list(f['obsm'].keys()) if 'obsm' in f else []
+    info['pairwise_relationships'] = list(f['obsp'].keys()) if 'obsp' in f else []
+    info['expression_layers'] = list(f['layers'].keys()) if 'layers' in f else []
+
+    # Observation and variable info
+    if 'obs' in f:
+      info['obs_contents'] = list(f['obs'].keys())
+      # Get cell type categories if they exist
+      if 'cell_type' in f['obs'] and 'categories' in f['obs']['cell_type']:
+        info['cell_type_count'] = int(len(f['obs']['cell_type']['categories']))
+
+    if 'var' in f:
+      info['var_contents'] = list(f['var'].keys())
+
+  # Convert any remaining numpy types to Python native types
+  return _convert_to_python_types(info)

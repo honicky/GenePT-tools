@@ -1,14 +1,23 @@
 import pytest
 import numpy as np
-import torch
+try:
+  import torch
+  _torch_available = True
+except ImportError:
+  _torch_available = False
+
 import pandas as pd
 from scipy import sparse
 from src.inference import (
   create_embedding_matrix,
-  create_embedding_matrix_torch,
   create_cell_embeddings,
-  create_cell_embeddings_torch,
 )
+
+if _torch_available:
+  from src.inference import (
+    create_embedding_matrix_torch,
+    create_cell_embeddings_torch,
+  )
 
 
 @pytest.fixture
@@ -58,21 +67,22 @@ def test_create_embedding_matrix(sample_data):
   assert valid_indices == [0, 1, 2]  # Should match position in major_ensembl_ids
 
 
-def test_create_embedding_matrix_torch(sample_data):
-  embedding_matrix, valid_indices = create_embedding_matrix_torch(
-    sample_data["merged_embeddings"],
-    sample_data["major_gene_ids"],
-  )
+if _torch_available:
+  def test_create_embedding_matrix_torch(sample_data):
+    embedding_matrix, valid_indices = create_embedding_matrix_torch(
+      sample_data["merged_embeddings"],
+      sample_data["major_gene_ids"],
+    )
 
-  # Check type and shape
-  assert isinstance(embedding_matrix, torch.Tensor)
-  assert embedding_matrix.shape == (2, 3)
-  assert len(valid_indices) == 3
+    # Check type and shape
+    assert isinstance(embedding_matrix, torch.Tensor)
+    assert embedding_matrix.shape == (2, 3)
+    assert len(valid_indices) == 3
 
-  # Check values
-  expected_matrix = torch.tensor([[0.1, 0.2, 0.4], [0.5, 0.6, 0.8]],
-                                 dtype=torch.float32)
-  assert torch.allclose(embedding_matrix, expected_matrix)
+    # Check values
+    expected_matrix = torch.tensor([[0.1, 0.2, 0.4], [0.5, 0.6, 0.8]],
+                                  dtype=torch.float32)
+    assert torch.allclose(embedding_matrix, expected_matrix)
 
 
 def test_create_cell_embeddings(sample_data):
@@ -89,59 +99,59 @@ def test_create_cell_embeddings(sample_data):
   norms = np.linalg.norm(cell_embeddings, axis=1)
   np.testing.assert_array_almost_equal(norms, np.ones(3))
 
+if _torch_available:
+  def test_create_cell_embeddings_torch(sample_data):
+    embedding_matrix, valid_indices = create_embedding_matrix_torch(
+      sample_data["merged_embeddings"],
+      sample_data["major_gene_ids"],
+    )
 
-def test_create_cell_embeddings_torch(sample_data):
-  embedding_matrix, valid_indices = create_embedding_matrix_torch(
-    sample_data["merged_embeddings"],
-    sample_data["major_gene_ids"],
-  )
+    # Pre-filter the expression matrix
+    filtered_expression = sample_data["expression_matrix"][:, valid_indices]
 
-  # Pre-filter the expression matrix
-  filtered_expression = sample_data["expression_matrix"][:, valid_indices]
+    # Convert scipy sparse matrix to torch sparse CSR tensor
+    expression_tensor = torch.sparse_csr_tensor(
+      torch.LongTensor(filtered_expression.indptr),
+      torch.LongTensor(filtered_expression.indices),
+      torch.FloatTensor(filtered_expression.data),
+      size=filtered_expression.shape,
+    )
 
-  # Convert scipy sparse matrix to torch sparse CSR tensor
-  expression_tensor = torch.sparse_csr_tensor(
-    torch.LongTensor(filtered_expression.indptr),
-    torch.LongTensor(filtered_expression.indices),
-    torch.FloatTensor(filtered_expression.data),
-    size=filtered_expression.shape,
-  )
+    cell_embeddings = create_cell_embeddings_torch(
+      expression_tensor,
+      embedding_matrix,
+    )
 
-  cell_embeddings = create_cell_embeddings_torch(
-    expression_tensor,
-    embedding_matrix,
-  )
+    # Check type and shape
+    assert isinstance(cell_embeddings, torch.Tensor)
+    assert cell_embeddings.shape == (3, 2)
 
-  # Check type and shape
-  assert isinstance(cell_embeddings, torch.Tensor)
-  assert cell_embeddings.shape == (3, 2)
+    # Check normalization
+    norms = torch.norm(cell_embeddings, dim=1)
+    assert torch.allclose(norms, torch.ones_like(norms))
 
-  # Check normalization
-  norms = torch.norm(cell_embeddings, dim=1)
-  assert torch.allclose(norms, torch.ones_like(norms))
-
-  # Check actual values against numpy implementation
-  numpy_embeddings = create_cell_embeddings(
-    filtered_expression,  # use pre-filtered expression matrix
-    embedding_matrix.cpu().numpy(),
-    list(range(len(valid_indices))),  # since expression is already filtered
-  )
-  assert torch.allclose(cell_embeddings,
-                        torch.tensor(numpy_embeddings, dtype=torch.float32))
+    # Check actual values against numpy implementation
+    numpy_embeddings = create_cell_embeddings(
+      filtered_expression,  # use pre-filtered expression matrix
+      embedding_matrix.cpu().numpy(),
+      list(range(len(valid_indices))),  # since expression is already filtered
+    )
+    assert torch.allclose(cell_embeddings,
+                          torch.tensor(numpy_embeddings, dtype=torch.float32))
 
 
-def test_device_handling():
-  if torch.cuda.is_available():
-    device = torch.device("cuda")
-    # Create small test data
-    embeddings_data = {"ensembl_id": ["ENSG1"], "dim1": [0.1], "dim2": [0.5]}
-    merged_embeddings = pd.DataFrame(embeddings_data)
-    major_ensembl_ids = pd.Series(["ENSG1"])
+  def test_device_handling():
+    if torch.cuda.is_available():
+      device = torch.device("cuda")
+      # Create small test data
+      embeddings_data = {"ensembl_id": ["ENSG1"], "dim1": [0.1], "dim2": [0.5]}
+      merged_embeddings = pd.DataFrame(embeddings_data)
+      major_ensembl_ids = pd.Series(["ENSG1"])
 
-    # Test device placement
-    embedding_matrix, _ = create_embedding_matrix_torch(
-      merged_embeddings, major_ensembl_ids, device=device)
-    assert embedding_matrix.device.type == "cuda"
+      # Test device placement
+      embedding_matrix, _ = create_embedding_matrix_torch(
+        merged_embeddings, major_ensembl_ids, device=device)
+      assert embedding_matrix.device.type == "cuda"
 
 
 def test_create_embedding_matrix_with_index():
@@ -247,13 +257,14 @@ def test_create_embedding_matrix_with_gene_id_index():
   # Check indices
   assert valid_indices == [0, 1, 2]  # Should match position in major_ensembl_ids
 
-  # Test PyTorch version
-  embedding_matrix_torch, valid_indices_torch = create_embedding_matrix_torch(
-    merged_embeddings, major_ensembl_ids)
+  if _torch_available:
+    # Test PyTorch version
+    embedding_matrix_torch, valid_indices_torch = create_embedding_matrix_torch(
+      merged_embeddings, major_ensembl_ids)
 
-  # Check torch tensor
-  assert isinstance(embedding_matrix_torch, torch.Tensor)
-  assert embedding_matrix_torch.shape == (3, 3)
-  assert torch.allclose(embedding_matrix_torch,
-                        torch.tensor(expected_matrix, dtype=torch.float32))
-  assert valid_indices_torch == valid_indices
+    # Check torch tensor
+    assert isinstance(embedding_matrix_torch, torch.Tensor)
+    assert embedding_matrix_torch.shape == (3, 3)
+    assert torch.allclose(embedding_matrix_torch,
+                          torch.tensor(expected_matrix, dtype=torch.floatxp32))
+    assert valid_indices_torch == valid_indices

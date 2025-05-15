@@ -59,13 +59,16 @@ def create_embedding_matrix(merged_embeddings, selected_gene_ids, id_column=None
             - embedding_matrix: numpy array of shape (n_embedding_dims, n_valid_genes)
             - valid_indices: list of indices mapping to original expression matrix columns
     """
+  print(f"Creating embedding matrix for {len(selected_gene_ids)} genes")
   embedding_cols, valid_indices, embedding_indices = _get_embedding_indices(
     merged_embeddings, selected_gene_ids, id_column)
 
   # Create the reordered embedding matrix
+  print(f"Selecting embedding inidices")
   embedding_matrix = (
     merged_embeddings[embedding_cols].iloc[embedding_indices].values.T)
 
+  print(f"Embedding matrix shape: {embedding_matrix.shape}")
   return embedding_matrix, valid_indices
 
 
@@ -94,6 +97,7 @@ if _torch_available:
     embedding_cols, valid_indices, embedding_indices = _get_embedding_indices(
       merged_embeddings, selected_gene_ids, id_column)
 
+    print(f"Creating reordered embedding matrix")
     # Create the reordered embedding matrix as a PyTorch tensor on specified device
     embedding_matrix = torch.tensor(
       merged_embeddings[embedding_cols].iloc[embedding_indices].values.T,
@@ -101,6 +105,7 @@ if _torch_available:
       device=device,
     )
 
+    print(f"Embedding matrix shape: {embedding_matrix.shape}")
     return embedding_matrix, valid_indices
 
   def create_cell_embeddings_torch(expression_matrix, embedding_matrix, device="cpu"):

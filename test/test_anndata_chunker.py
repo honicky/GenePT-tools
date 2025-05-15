@@ -4,8 +4,13 @@ import pandas as pd
 from pathlib import Path
 import h5py
 import anndata as ad
+from anndata._core.aligned_df import ImplicitModificationWarning
 from scipy import sparse
-import torch
+try:
+  import torch
+  _torch_available = True
+except ImportError:
+  _torch_available = False
 
 from src.utils import (
   AnnDataChunker,
@@ -13,7 +18,9 @@ from src.utils import (
   _load_var_metadata,
   _load_obs_metadata,
 )
+import warnings
 
+warnings.filterwarnings("ignore", category=ImplicitModificationWarning)
 
 @pytest.fixture
 def temp_h5ad_file(tmp_path):
@@ -98,33 +105,36 @@ def test_load_subset(temp_h5ad_file):
       chunker.load_subset(start_row=1000, n_rows=10)  # start_row too large
 
 
-def test_load_torch_csr_matrix(temp_h5ad_file):
-  """Test loading data as torch CSR matrix."""
-  with AnnDataChunker(temp_h5ad_file, None) as chunker:
-    # Test normal loading
-    matrix = chunker.load_torch_csr_matrix(start_row=0, n_rows=10)
-    assert matrix.shape == (10, 50)
-    assert matrix.layout == torch.sparse_csr
-    assert matrix.dtype == torch.float32
+# Only run this test if torch is installed
+if _torch_available:
 
-    # Test with valid_indices
-    valid_indices = np.array([0, 1, 2])
-    full_matrix = chunker.load_torch_csr_matrix(start_row=0, n_rows=10)
-    subset_matrix = chunker.load_torch_csr_matrix(
-      start_row=0, n_rows=10, valid_indices=valid_indices)
+  def test_load_torch_csr_matrix(temp_h5ad_file):
+    """Test loading data as torch CSR matrix."""
+    with AnnDataChunker(temp_h5ad_file, None) as chunker:
+      # Test normal loading
+      matrix = chunker.load_torch_csr_matrix(start_row=0, n_rows=10)
+      assert matrix.shape == (10, 50)
+      assert matrix.layout == torch.sparse_csr
+      assert matrix.dtype == torch.float32
 
-    assert subset_matrix.shape == (
-      10,
-      len(valid_indices),
-    )  # Shape should match valid_indices length
-    assert subset_matrix.layout == torch.sparse_csr
-    assert subset_matrix.dtype == torch.float32
+      # Test with valid_indices
+      valid_indices = np.array([0, 1, 2])
+      full_matrix = chunker.load_torch_csr_matrix(start_row=0, n_rows=10)
+      subset_matrix = chunker.load_torch_csr_matrix(
+        start_row=0, n_rows=10, valid_indices=valid_indices)
 
-    # Convert to dense to easily compare values
-    full_dense = full_matrix.to_dense()
-    subset_dense = subset_matrix.to_dense()
-    for i, idx in enumerate(valid_indices):
-      assert torch.allclose(subset_dense[:, i], full_dense[:, idx])
+      assert subset_matrix.shape == (
+        10,
+        len(valid_indices),
+      )  # Shape should match valid_indices length
+      assert subset_matrix.layout == torch.sparse_csr
+      assert subset_matrix.dtype == torch.float32
+
+      # Convert to dense to easily compare values
+      full_dense = full_matrix.to_dense()
+      subset_dense = subset_matrix.to_dense()
+      for i, idx in enumerate(valid_indices):
+        assert torch.allclose(subset_dense[:, i], full_dense[:, idx])
 
 
 def test_helper_functions(temp_h5ad_file):
@@ -166,7 +176,6 @@ def test_property_access(temp_h5ad_file):
   with chunker:
     assert isinstance(chunker.obs, pd.DataFrame)
     assert isinstance(chunker.var, pd.DataFrame)
-
 
 def test_iter_chunks(temp_h5ad_file):
   """Test the iter_chunks method of AnnDataChunker."""
@@ -292,7 +301,6 @@ def test_anndata_chunker_file_ownership(temp_h5ad_file):
     chunker_file.close()
     assert not chunker_file.is_open
     assert not file_obj.closed  # Should not close the file we don't own
-
 
 def test_anndata_chunker_iter_chunks_with_file_object(temp_h5ad_file):
   """Test iter_chunks method with a file-like object."""
