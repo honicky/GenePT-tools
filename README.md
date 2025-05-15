@@ -28,23 +28,23 @@ We used a [Google Sheet](https://docs.google.com/spreadsheets/d/1Epjhj0ZBFEdY5iI
   - Hugging Face datasets/models
 
 ### Installation
-```bash
-# Create venv
-python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+We use `uv` for package management.  Install using the instructions at https://docs.astral.sh/uv/getting-started/installation/ 
 
-# Install in development mode with all tools
-pip install -e ".[dev]"
+Then:
+
+```bash
+uv sync
+uv pip install -e '.[dev]' # to use testing tools etc
 ```
 
 ### Running tools
 ```bash
 # Format code
-black .
-isort --gitignore .
+scripts/format.sh
+uv run isort --gitignore .
 
-# Run tests
-pytest
+# run tests
+uv run pytest
 ```
 
 ## Important files

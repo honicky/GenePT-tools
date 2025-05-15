@@ -68,6 +68,7 @@ def test_create_embedding_matrix(sample_data):
 
 
 if _torch_available:
+
   def test_create_embedding_matrix_torch(sample_data):
     embedding_matrix, valid_indices = create_embedding_matrix_torch(
       sample_data["merged_embeddings"],
@@ -81,7 +82,7 @@ if _torch_available:
 
     # Check values
     expected_matrix = torch.tensor([[0.1, 0.2, 0.4], [0.5, 0.6, 0.8]],
-                                  dtype=torch.float32)
+                                   dtype=torch.float32)
     assert torch.allclose(embedding_matrix, expected_matrix)
 
 
@@ -99,7 +100,9 @@ def test_create_cell_embeddings(sample_data):
   norms = np.linalg.norm(cell_embeddings, axis=1)
   np.testing.assert_array_almost_equal(norms, np.ones(3))
 
+
 if _torch_available:
+
   def test_create_cell_embeddings_torch(sample_data):
     embedding_matrix, valid_indices = create_embedding_matrix_torch(
       sample_data["merged_embeddings"],
@@ -138,7 +141,6 @@ if _torch_available:
     )
     assert torch.allclose(cell_embeddings,
                           torch.tensor(numpy_embeddings, dtype=torch.float32))
-
 
   def test_device_handling():
     if torch.cuda.is_available():

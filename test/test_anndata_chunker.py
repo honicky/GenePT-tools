@@ -22,6 +22,7 @@ import warnings
 
 warnings.filterwarnings("ignore", category=ImplicitModificationWarning)
 
+
 @pytest.fixture
 def temp_h5ad_file(tmp_path):
   """Create a temporary h5ad file for testing."""
@@ -177,6 +178,7 @@ def test_property_access(temp_h5ad_file):
     assert isinstance(chunker.obs, pd.DataFrame)
     assert isinstance(chunker.var, pd.DataFrame)
 
+
 def test_iter_chunks(temp_h5ad_file):
   """Test the iter_chunks method of AnnDataChunker."""
   with AnnDataChunker(temp_h5ad_file, ["cell_type", "condition"]) as chunker:
@@ -301,6 +303,7 @@ def test_anndata_chunker_file_ownership(temp_h5ad_file):
     chunker_file.close()
     assert not chunker_file.is_open
     assert not file_obj.closed  # Should not close the file we don't own
+
 
 def test_anndata_chunker_iter_chunks_with_file_object(temp_h5ad_file):
   """Test iter_chunks method with a file-like object."""
