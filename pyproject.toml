@@ -4,16 +4,24 @@ version = "0.1.0"
 description = "Your project description"
 dependencies = [
     "anndata",
+    "anndata-metadata>=0.1.2",
     "boto3",
     "datasets",
+    "h5py>=3.13.0",
+    "ipykernel",
+    "latch",
     "lightgbm",
     "nbformat",
     "numpy",
     "openai",
     "pandas",
+    "plotly",
+    "pulp>=3.1.1",
+    "s3fs>=0.4.2",
     "scanpy",
     "scikit-learn",
     "umap-learn",
+    "xgboost>=3.0.1",
 ]
 
 [project.optional-dependencies]
