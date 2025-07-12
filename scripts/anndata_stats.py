@@ -23,6 +23,12 @@ def print_human_readable(info: dict[str, Any]) -> None:
   print(f"Dataset file size: {info['file_size_gb']:.2f} GB")
   print(f"\nMain HDF5 groups: {info['main_groups']}")
 
+  # Print cell and gene counts if available
+  if 'cell_count' in info:
+    print(f"Cell count (obs): {info['cell_count']}")
+  if 'gene_count' in info:
+    print(f"Gene count (var): {info['gene_count']}")
+
   if 'x_storage' in info:
     print(f"\nExpression matrix (X) storage:")
     print(f"  Format: {info['x_storage']['format']}")
@@ -33,12 +39,9 @@ def print_human_readable(info: dict[str, Any]) -> None:
 
     if 'matrix_shape' in info['x_storage']:
       print(f"  Matrix shape: {info['x_storage']['matrix_shape']}")
-      if info['x_storage']['format'] == 'CSR':
-        print(f"    Rows correspond to observations (e.g., cells)")
-        print(f"    Columns correspond to variables (e.g., genes)")
-      elif info['x_storage']['format'] == 'CSC':
-        print(f"    Rows correspond to variables (e.g., genes)")
-        print(f"    Columns correspond to observations (e.g., cells)")
+      if 'orientation_desc' in info['x_storage']:
+        print(f"    Orientation: {info['x_storage']['orientation']}")
+        print(f"    {info['x_storage']['orientation_desc']}")
 
     if 'chunk_size' in info['x_storage']:
       print(f"  Chunk size: {info['x_storage']['chunk_size']}")
@@ -89,6 +92,7 @@ def main():
     print(f"Error: File '{args.file_path}' not found")
   except Exception as e:
     print(f"Error analyzing file: {str(e)}")
+    raise e
 
 
 if __name__ == "__main__":

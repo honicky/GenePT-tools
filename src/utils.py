@@ -659,18 +659,67 @@ def _convert_to_python_types(obj: Any) -> Any:
   return obj
 
 
+def _find_first_dataset_length(group):
+    """
+    Recursively search for the first dataset in the group and return its length.
+    Returns None if no dataset is found.
+    """
+    for key in group.keys():
+        item = group[key]
+        if isinstance(item, h5py.Dataset) and len(item.shape) > 0:
+            return item.shape[0]
+        elif isinstance(item, h5py.Group):
+            result = _find_first_dataset_length(item)
+            if result is not None:
+                return result
+    return None
+
 def get_anndata_file_info(file_path: str) -> dict[str, Any]:
+
   """
     Extract information from an H5AD file and return it as a dictionary.
     """
-  info = {}
-
-  # Get file size
-  info['file_size_gb'] = os.path.getsize(file_path) / 1e9
+  
+  info = {'file_size_gb':  os.path.getsize(file_path) / 1e9}
 
   with h5py.File(file_path, 'r') as f:
-    # Main HDF5 groups
-    info['main_groups'] = list(f.keys())
+    info.update(_get_anndata_file_info(f))
+
+  # Get file size
+  return info
+
+def _get_anndata_file_info(file_obj: h5py.File) -> dict[str, Any]:
+    f = file_obj
+
+    info = {"main_groups": list(f.keys())}
+
+    # --- Cell count (obs) ---
+    n_obs = None
+    if 'obs' in f and 'cell_type' in f['obs']:
+        cell_type = f['obs']['cell_type']
+        if isinstance(cell_type, h5py.Group) and 'codes' in cell_type:
+            n_obs = cell_type['codes'].shape[0]
+        elif isinstance(cell_type, h5py.Dataset):
+            n_obs = cell_type.shape[0]
+
+    # --- Gene count (var) ---
+    n_var = None
+    if 'var' in f:
+        if 'feature_name' in f['var']:
+            feature_name = f['var']['feature_name']
+            if isinstance(feature_name, h5py.Group) and 'categories' in feature_name:
+                n_var = feature_name['categories'].shape[0]
+            elif isinstance(feature_name, h5py.Dataset):
+                n_var = feature_name.shape[0]
+        elif '_index' in f['var']:
+            _index = f['var']['_index']
+            if isinstance(_index, h5py.Group) and 'categories' in _index:
+                n_var = _index['categories'].shape[0]
+            elif isinstance(_index, h5py.Dataset):
+                n_var = _index.shape[0]
+
+    info['cell_count'] = n_obs
+    info['gene_count'] = n_var
 
     # Expression matrix info
     if 'X' in f:
@@ -679,24 +728,18 @@ def get_anndata_file_info(file_path: str) -> dict[str, Any]:
 
       # Detect sparse matrix format
       if all(comp in x_components for comp in ['data', 'indices', 'indptr']):
-        # Default to CSR unless we find evidence otherwise
         format_type = 'CSR'
-
-        # Check format attribute if it exists
         if 'format' in f['X'].attrs:
           stored_format = f['X'].attrs['format']
           if isinstance(stored_format, bytes):
             stored_format = stored_format.decode('utf-8')
           format_type = stored_format.upper()
         else:
-          # If no format attribute, try to determine from shape
           if 'shape' in f['X'].attrs:
             matrix_shape = f['X'].attrs['shape']
             n_rows = len(f['X']['indptr']) - 1
-            # If number of rows from indptr matches second dimension, it's likely CSC
             if n_rows == matrix_shape[1]:
               format_type = 'CSC'
-
         info['x_storage']['format'] = format_type
 
       elif all(comp in x_components for comp in ['data', 'row', 'col']):
@@ -710,16 +753,48 @@ def get_anndata_file_info(file_path: str) -> dict[str, Any]:
           'dtype': str(f['X']['data'].dtype)
         })
 
-        # Add shape information based on format
         if info['x_storage']['format'] in ['CSR', 'CSC']:
           info['x_storage'].update({
             'indices_shape': tuple(int(x) for x in f['X']['indices'].shape),
             'indptr_shape': tuple(int(x) for x in f['X']['indptr'].shape)
           })
-          # Add matrix shape if available
           if 'shape' in f['X'].attrs:
             info['x_storage']['matrix_shape'] = tuple(
               int(x) for x in f['X'].attrs['shape'])
+
+            # --- Orientation check ---
+            matrix_shape = info['x_storage']['matrix_shape']
+            n_rows, n_cols = matrix_shape
+
+            if 'cell_type' in f['obs']:
+              if isinstance(f['obs']['cell_type'], h5py.Group) and 'codes' in f['obs']['cell_type']:
+                n_obs = len(f['obs']['cell_type']['codes'])
+              else:
+                n_obs = len(f['obs']['cell_type'])
+            else:
+              n_obs = len(f['obs'][next(iter(f['obs'].keys()))]) if 'obs' in f and f['obs'].keys() else None
+
+            if 'feature_name' in f['var']:
+              if isinstance(f['var']['feature_name'], h5py.Group) and 'codes' in f['var']['feature_name']:
+                n_var = len(f['var']['feature_name']['codes'])
+              else:
+                n_var = len(f['var']['feature_name'])
+
+            else:
+              n_var = len(f['var'][next(iter(f['var'].keys()))]) if 'var' in f and f['var'].keys() else None
+
+            if n_rows == n_obs and n_cols == n_var:
+              orientation = "anndata_default"
+              orientation_desc = "rows=observations (cells), cols=variables (genes)"
+            elif n_rows == n_var and n_cols == n_obs:
+              orientation = "transposed"
+              orientation_desc = "rows=variables (genes), cols=observations (cells)"
+            else:
+              orientation = "unknown"
+              orientation_desc = "matrix shape does not match obs/var counts"
+
+            info['x_storage']['orientation'] = orientation
+            info['x_storage']['orientation_desc'] = orientation_desc
         elif info['x_storage']['format'] == 'COO':
           info['x_storage'].update({
             'row_shape': tuple(int(x) for x in f['X']['row'].shape),
@@ -734,15 +809,27 @@ def get_anndata_file_info(file_path: str) -> dict[str, Any]:
     info['pairwise_relationships'] = list(f['obsp'].keys()) if 'obsp' in f else []
     info['expression_layers'] = list(f['layers'].keys()) if 'layers' in f else []
 
-    # Observation and variable info
-    if 'obs' in f:
-      info['obs_contents'] = list(f['obs'].keys())
-      # Get cell type categories if they exist
-      if 'cell_type' in f['obs'] and 'categories' in f['obs']['cell_type']:
-        info['cell_type_count'] = int(len(f['obs']['cell_type']['categories']))
-
     if 'var' in f:
       info['var_contents'] = list(f['var'].keys())
 
-  # Convert any remaining numpy types to Python native types
-  return _convert_to_python_types(info)
+    # Convert any remaining numpy types to Python native types
+    return _convert_to_python_types(info)
+
+def _check_orientation(file_path, matrix_shape):
+    with h5py.File(file_path, 'r') as f:
+        n_obs = len(f['obs'][next(iter(f['obs'].keys()))]) if 'obs' in f and f['obs'].keys() else None
+        n_var = len(f['var'][next(iter(f['var'].keys()))]) if 'var' in f and f['var'].keys() else None
+
+    n_rows, n_cols = matrix_shape
+
+    print("\n--- Orientation Check ---")
+    print(f"obs (cells) count: {n_obs}")
+    print(f"var (genes) count: {n_var}")
+    print(f"Matrix shape: {matrix_shape}")
+
+    if n_rows == n_obs and n_cols == n_var:
+        print("Matrix shape matches AnnData default: rows=cells, cols=genes (CSR recommended for row chunking).")
+    elif n_rows == n_var and n_cols == n_obs:
+        print("Matrix shape is transposed: rows=genes, cols=cells (CSC recommended for column chunking).")
+    else:
+        print("Matrix shape does not match obs/var counts! Please check your file.")
