@@ -111,4 +111,4 @@ This is a preliminary repository with work in progress. Code is mostly untested 
 
 ## License
 
-This project is licensed under the MIT License. The original GenePT weights are governed by the license of the original GenePT repository.
+This project is subject to the license described in the LICENSE.md file.
