@@ -101,6 +101,18 @@ def test_create_cell_embeddings(sample_data):
   np.testing.assert_array_almost_equal(norms, np.ones(3))
 
 
+def test_create_cell_embeddings_with_zero_row(sample_data):
+  embedding_matrix, valid_indices = create_embedding_matrix(
+    sample_data["merged_embeddings"], sample_data["major_gene_ids"])
+
+  zero_expr = sparse.csr_matrix([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]])
+  cell_embeddings = create_cell_embeddings(zero_expr, embedding_matrix,
+                                           valid_indices)
+
+  assert np.all(cell_embeddings[0] == 0)
+  assert not np.any(np.isnan(cell_embeddings))
+
+
 if _torch_available:
 
   def test_create_cell_embeddings_torch(sample_data):
@@ -141,6 +153,25 @@ if _torch_available:
     )
     assert torch.allclose(cell_embeddings,
                           torch.tensor(numpy_embeddings, dtype=torch.float32))
+
+  def test_create_cell_embeddings_torch_zero_row(sample_data):
+    embedding_matrix, valid_indices = create_embedding_matrix_torch(
+      sample_data["merged_embeddings"], sample_data["major_gene_ids"])
+
+    zero_expr = sparse.csr_matrix([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]])
+    filtered_expression = zero_expr[:, valid_indices]
+    expression_tensor = torch.sparse_csr_tensor(
+      torch.LongTensor(filtered_expression.indptr),
+      torch.LongTensor(filtered_expression.indices),
+      torch.FloatTensor(filtered_expression.data),
+      size=filtered_expression.shape,
+    )
+
+    cell_embeddings = create_cell_embeddings_torch(expression_tensor,
+                                                    embedding_matrix)
+
+    assert torch.all(cell_embeddings[0] == 0)
+    assert not torch.isnan(cell_embeddings).any()
 
   def test_device_handling():
     if torch.cuda.is_available():
