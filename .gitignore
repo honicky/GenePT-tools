@@ -177,3 +177,12 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# VSCode and other IDEs
+.vscode/
+.idea/
+.cursor/
+.cursorrules
+.cursorignore
+.cursorignorerules
+.cursorignorerulesrules
