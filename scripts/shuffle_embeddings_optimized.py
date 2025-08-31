@@ -65,12 +65,21 @@ class BucketWriter:
     # Concatenate all buffered dataframes
     combined_df = pd.concat(self.buffer, ignore_index=True)
     
+    # Ensure consistent data types for numeric columns
+    # Convert all numeric columns to float64 (which maps to double in parquet)
+    for col in combined_df.columns:
+      if combined_df[col].dtype in ['float32', 'float64', 'float', 'double']:
+        combined_df[col] = combined_df[col].astype('float64')
+    
     # Convert to pyarrow table
     table = pa.Table.from_pandas(combined_df, preserve_index=False)
     
     if self.writer is None:
       self.schema = table.schema
       self.writer = pq.ParquetWriter(self.path, self.schema, compression='snappy')
+    else:
+      # Cast the table to match the existing schema to avoid type mismatches
+      table = table.cast(self.schema)
     
     self.writer.write_table(table)
     self.buffer = []
@@ -107,8 +116,11 @@ def optimized_shuffle(input_dir, output_dir, num_buckets=20, batch_size=10000,
   common_columns = get_common_columns()
   print(f"Using {len(common_columns)} common columns")
   
-  # Create temporary directory for buckets
-  temp_dir = Path(tempfile.mkdtemp(prefix='shuffle_buckets_'))
+  # Create temporary directory for buckets in the current working directory
+  # Use a subdirectory to avoid filling up the root filesystem
+  project_temp_dir = Path.cwd() / "temp"
+  project_temp_dir.mkdir(exist_ok=True)
+  temp_dir = Path(tempfile.mkdtemp(prefix='shuffle_buckets_', dir=project_temp_dir))
   print(f"Using temporary directory: {temp_dir}")
   
   try:
@@ -132,8 +144,20 @@ def optimized_shuffle(input_dir, output_dir, num_buckets=20, batch_size=10000,
       table = pq.read_table(file_path, columns=common_columns)
       df = table.to_pandas()
       
-      # Add source filename column
-      df['source_file'] = file_path.stem
+      # Create a new dataframe with consistent types to avoid fragmentation
+      # First, convert numeric columns
+      numeric_data = {}
+      for col in common_columns:
+        if col.isdigit():  # Embedding columns are numeric strings
+          numeric_data[col] = df[col].astype('float64')
+        else:
+          numeric_data[col] = df[col]
+      
+      # Add source filename column to the dict
+      numeric_data['source_file'] = file_path.stem
+      
+      # Create new dataframe from dict (avoids fragmentation)
+      df = pd.DataFrame(numeric_data)
       
       # Ensure consistent column order
       df = df[final_columns]
