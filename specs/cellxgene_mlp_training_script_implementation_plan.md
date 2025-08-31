@@ -43,36 +43,42 @@ Step-by-step implementation checklist for converting the notebook to a productio
 ## Phase 2: Model and Training Components
 ### Week 2: Core Training Infrastructure
 
-- [ ] **2.1 Port MLP architecture** (`src/models/mlp_classifier.py`)
-  - [ ] Copy MLP creation logic from notebook
-  - [ ] Implement linear interpolation for hidden dimensions
-  - [ ] Add BatchNorm and Dropout layers
-  - [ ] Test: Create model and verify architecture matches notebook
+- [x] **2.1 Port MLP architecture** (`src/models/mlp_classifier.py`)
+  - [x] Copy MLP creation logic from notebook
+  - [x] Implement linear interpolation for hidden dimensions
+  - [x] Add BatchNorm and Dropout layers
+  - [x] Test: Create model and verify architecture matches notebook
 
-- [ ] **2.2 Port evaluation metrics** (`src/training/metrics.py`)
-  - [ ] Copy metric functions from notebook (recall@k, mrr@k, dcg@k)
-  - [ ] Add macro F1, precision, recall
-  - [ ] Implement evaluation function
-  - [ ] Test: Compute metrics on dummy data
+- [x] **2.2 Port evaluation metrics** (`src/training/metrics.py`)
+  - [x] Copy metric functions from notebook (recall@k, mrr@k, dcg@k)
+  - [x] Add macro F1, precision, recall
+  - [x] Implement evaluation function
+  - [x] Test: Compute metrics on dummy data
 
-- [ ] **2.3 Create configuration system** (`src/training/config.py`)
-  - [ ] Create `TrainingConfig` dataclass
-  - [ ] Add all hyperparameters with defaults from notebook
-  - [ ] Add data paths configuration
-  - [ ] Test: Create config and verify parameters
+- [x] **2.3 Create configuration system** (`src/training/config.py`)
+  - [x] Create `TrainingConfig` dataclass
+  - [x] Add all hyperparameters with defaults from notebook
+  - [x] Add data paths configuration
+  - [x] Test: Create config and verify parameters
 
-- [ ] **2.4 Implement checkpoint utilities** (`src/utils/checkpoint.py`)
-  - [ ] Save checkpoint function (model, optimizer, epoch, batch)
-  - [ ] Load checkpoint function
-  - [ ] Best model tracking
-  - [ ] Test: Save and load checkpoint
+- [x] **2.4 Implement checkpoint utilities** (`src/utils/checkpoint.py`)
+  - [x] Save checkpoint function (model, optimizer, epoch, batch)
+  - [x] Load checkpoint function
+  - [x] Best model tracking
+  - [x] Test: Save and load checkpoint
 
-- [ ] **2.5 Create trainer class** (`src/training/trainer.py`)
-  - [ ] Implement `MLPTrainer.__init__`
-  - [ ] Add model creation method
-  - [ ] Add optimizer creation (AdamW)
-  - [ ] Add single batch training step
-  - [ ] Test: Train on single batch
+- [x] **2.5 Create trainer class** (`src/training/trainer.py`)
+  - [x] Implement `MLPTrainer.__init__`
+  - [x] Add model creation method
+  - [x] Add optimizer creation (AdamW)
+  - [x] Add single batch training step
+  - [x] Test: Train on single batch
+
+- [x] **2.6 Create comprehensive pytest unit tests**
+  - [x] `test/test_mlp_classifier.py` - Model architecture tests
+  - [x] `test/test_metrics.py` - Evaluation metrics tests
+  - [x] `test/test_config.py` - Configuration tests
+  - [x] `test/test_checkpoint.py` - Checkpoint utilities tests
 
 ## Phase 3: Training Loop Implementation
 ### Week 3: Complete Training Pipeline

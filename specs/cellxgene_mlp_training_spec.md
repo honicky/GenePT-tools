@@ -301,18 +301,66 @@ scripts/
 
 ## Testing Strategy
 
-### Unit Tests
-- ShuffleBuffer correctness
-- Dataset iteration and shuffling
-- Model architecture validation
-- Metric calculations
+### Unit Tests (pytest-based)
+
+All tests use pytest and are located in the `test/` directory. Tests are designed to avoid side effects and minimize mocking.
+
+#### Model Tests (`test/test_mlp_classifier.py`)
+- MLP architecture creation with correct dimensions
+- Hidden layer dimension interpolation
+- Layer ordering (Linear, BatchNorm, ReLU, Dropout)
+- Forward pass shape validation
+- Training/eval mode behavior
+- Parameter counting
+- Device placement
+
+#### Metrics Tests (`test/test_metrics.py`)
+- Recall@k, MRR@k, DCG@k calculations
+- Perfect/partial/zero prediction cases
+- Batch inference functionality
+- Full evaluation pipeline
+- Multi-device support
+
+#### Configuration Tests (`test/test_config.py`)
+- Default value initialization
+- Path object conversion
+- Device auto-detection
+- Dictionary serialization for logging
+- Optuna integration
+
+#### Checkpoint Tests (`test/test_checkpoint.py`)
+- Save/load checkpoint functionality
+- Best model tracking
+- Checkpoint manager with automatic cleanup
+- Final model saving
+- Config persistence
+
+#### Data Loading Tests (`test/test_s3_dataset.py`)
+- S3 file listing and downloading
+- Local cache usage
+- Parquet file processing
+- Label encoding
+- Batch generation
+- Shuffling behavior
+
+#### Trainer Tests (`test/test_trainer.py`)
+- Model and optimizer creation
+- Single batch training
+- Epoch training loop
+- Validation evaluation
+- W&B integration (mocked)
+- Resume from checkpoint
 
 ### Integration Tests
-- End-to-end training on small dataset
+- End-to-end training on 3-file subset
+- Checkpoint save and resume
+- Metric computation verification
+- Memory usage monitoring
 
 ### Performance Tests
 - Throughput benchmarking
 - Memory scaling analysis
+- GPU utilization measurement
 
 
 ## Success Criteria
