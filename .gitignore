@@ -186,3 +186,7 @@ cython_debug/
 .cursorignore
 .cursorignorerules
 .cursorignorerulesrules
+
+models
+notebooks/wandb
+temp/

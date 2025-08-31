@@ -19,6 +19,8 @@ We used a [Google Sheet](https://docs.google.com/spreadsheets/d/1Epjhj0ZBFEdY5iI
 
 ## Setup
 
+See [SETUP_GUIDE.md](SETUP_GUIDE.md) for more detail on getting up and running.
+
 ### Requirements
 - Python 3.10 (required for scGPT compatibility)
 - Standard scientific Python packages (pandas, numpy, scikit-learn)
