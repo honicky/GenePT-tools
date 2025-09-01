@@ -13,9 +13,17 @@ from tqdm import tqdm
 
 from ..models.mlp_classifier import MLPClassifier
 from ..data_loading.s3_dataset import S3ParquetStreamDataset
-from ..utils.checkpoint import CheckpointManager, load_checkpoint
+from ..utils.checkpoint import CheckpointManager, load_checkpoint, save_best_model
 from .metrics import evaluate
 from .config import TrainingConfig
+
+# Optional wandb import
+try:
+  import wandb
+  WANDB_AVAILABLE = True
+except ImportError:
+  wandb = None
+  WANDB_AVAILABLE = False
 
 
 class MLPTrainer:
@@ -182,26 +190,21 @@ class MLPTrainer:
     
     X = df[available_cols].values.astype(np.float32)
     
-    # Encode labels
+    # Get the subset of cell types we're training on
+    training_cell_types = [self.cell_types[i] for i in self.cell_type_codes.values]
+    
+    # Encode labels using only the training cell types
     y = df["cell_type"].astype(
-      pd.CategoricalDtype(categories=self.cell_types)
+      pd.CategoricalDtype(categories=training_cell_types)
     ).cat.codes
     
-    # Filter to valid codes
-    valid_mask = y.isin(self.cell_type_codes.values)
+    # Filter out samples with unknown cell types (-1)
+    valid_mask = y >= 0
     X = X[valid_mask]
-    y = y[valid_mask].values
+    y = y[valid_mask].values.astype(np.int64)
     
-    # Map to our code system (matching notebook's y_to_code)
-    y_series = pd.Series(y, name='cell_type_code')
-    merged = pd.merge(
-      y_series,
-      self.cell_type_codes.reset_index().rename(columns={'index': 'cell_type', 0: 'code'}),
-      left_on='cell_type_code',
-      right_on='code',
-      how='left'
-    )
-    y = merged.index.values
+    # The encoded values are already correct (0 to num_classes-1)
+    # since we encoded using only the training cell types
     
     return X, y
   
@@ -279,7 +282,7 @@ class MLPTrainer:
       # Periodic evaluation on 5k validation set
       if self.global_step % self.config.eval_every_n_batches == 0 and self.X_val_5k is not None:
         val_metrics = self.evaluate_validation(use_5k=True)
-        if self.config.verbose:
+        if self.config.verbose and val_metrics and 'logloss' in val_metrics:
           print(f"\n[Step {self.global_step}] Val-5k metrics: "
                 f"loss={val_metrics['logloss']:.4f}, "
                 f"recall@10={val_metrics['recall_at_10']:.4f}")
@@ -287,7 +290,7 @@ class MLPTrainer:
       # Less frequent evaluation on full validation set
       if self.global_step % self.config.eval_full_every_n_batches == 0 and self.X_val_120k is not None:
         val_metrics = self.evaluate_validation(use_5k=False)
-        if self.config.verbose:
+        if self.config.verbose and val_metrics and 'logloss' in val_metrics:
           print(f"\n[Step {self.global_step}] Val-120k metrics: "
                 f"loss={val_metrics['logloss']:.4f}, "
                 f"recall@10={val_metrics['recall_at_10']:.4f}, "
@@ -349,8 +352,8 @@ class MLPTrainer:
       self.wandb_run.log(prefixed_metrics)
     
     # Update best metric for checkpointing
-    if prefix == "val120k":
-      self.checkpoint_manager.best_metric = self.checkpoint_manager.save_best_model(
+    if prefix == "val120k" and 'logloss' in metrics:
+      self.checkpoint_manager.best_metric = save_best_model(
         model=self.model,
         metrics={'val_logloss': metrics['logloss']},
         metric_name='val_logloss',
@@ -380,25 +383,24 @@ class MLPTrainer:
   
   def init_wandb(self):
     """Initialize Weights & Biases logging."""
-    try:
-      import wandb
-      
-      self.wandb_run = wandb.init(
-        project=self.config.wandb_project,
-        entity=self.config.wandb_entity,
-        name=self.config.wandb_run_name,
-        tags=self.config.wandb_tags,
-        config=self.config.to_dict(),
-        reinit=True
-      )
-      
-      # Watch model
-      wandb.watch(self.model, log='all', log_freq=100)
-      
-      print(f"Initialized W&B run: {self.wandb_run.name}")
-    except ImportError:
+    if not WANDB_AVAILABLE:
       print("Warning: wandb not installed, skipping W&B logging")
       self.wandb_run = None
+      return
+    
+    self.wandb_run = wandb.init(
+      project=self.config.wandb_project,
+      entity=self.config.wandb_entity,
+      name=self.config.wandb_run_name,
+      tags=self.config.wandb_tags,
+      config=self.config.to_dict(),
+      reinit=True
+    )
+    
+    # Watch model
+    wandb.watch(self.model, log='all', log_freq=100)
+    
+    print(f"Initialized W&B run: {self.wandb_run.name}")
   
   def run(self) -> Dict[str, float]:
     """Run the full training loop.

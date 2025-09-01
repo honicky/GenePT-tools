@@ -124,33 +124,25 @@ class S3ParquetStreamDataset(IterableDataset):
     Returns:
       Array of integer codes
     """
-    # Convert to categorical with our predefined categories
+    # Get the subset of cell types we're training on
+    training_cell_types = [self.cell_types[i] for i in self.cell_type_codes.values]
+    
+    # Convert to categorical using only the training cell types
     categorical = cell_type_series.astype(
-      pd.CategoricalDtype(categories=self.cell_types)
+      pd.CategoricalDtype(categories=training_cell_types)
     )
     
-    # Get codes and map through our cell_type_codes
+    # Get codes (-1 for unknown cell types)
     codes = categorical.cat.codes
     
-    # Filter to valid codes (those in our cell_type_codes)
-    valid_mask = codes.isin(self.cell_type_codes.values)
+    # Filter out unknown cell types
+    valid_mask = codes >= 0
     if not valid_mask.all():
       if self.verbose:
         print(f"Warning: Filtering out {(~valid_mask).sum()} samples with unknown cell types")
       codes = codes[valid_mask]
     
-    # Map to our code system
-    # This is a bit complex but matches the notebook's y_to_code function
-    codes_df = pd.DataFrame({'code': codes})
-    merged = pd.merge(
-      codes_df,
-      self.cell_type_codes.reset_index().rename(columns={'index': 'cell_type', 0: 'mapped_code'}),
-      left_on='code',
-      right_on='mapped_code',
-      how='left'
-    )
-    
-    return merged.index.values
+    return codes.values
   
   def _process_batch_file(self, file_path: Path) -> Iterator[Tuple[torch.Tensor, torch.Tensor]]:
     """Process a single batch file and yield mini-batches.
@@ -164,19 +156,24 @@ class S3ParquetStreamDataset(IterableDataset):
     # Read parquet file
     df = pd.read_parquet(file_path)
     
+    # Get the subset of cell types we're training on
+    training_cell_types = [self.cell_types[i] for i in self.cell_type_codes.values]
+    
+    # Filter to valid cell types
+    valid_mask = df['cell_type'].isin(training_cell_types)
+    df = df[valid_mask]
+    
+    if len(df) == 0:
+      if self.verbose:
+        print(f"Warning: No valid samples in {file_path}")
+      return
+    
     # Extract embedding columns
     embedding_cols = [str(i) for i in range(self.n_dims)]
     X = df[embedding_cols].values.astype(np.float32)
     
     # Encode labels
     y = self._encode_labels(df['cell_type'])
-    
-    # Filter X to match y if any samples were filtered
-    if len(y) < len(X):
-      valid_indices = df['cell_type'].astype(
-        pd.CategoricalDtype(categories=self.cell_types)
-      ).cat.codes.isin(self.cell_type_codes.values)
-      X = X[valid_indices]
     
     # Shuffle within file if requested
     if self.shuffle_within_files:

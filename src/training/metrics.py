@@ -105,6 +105,10 @@ def inference_all(
   Returns:
     Tuple of (predicted labels, predicted probabilities)
   """
+  if len(X) == 0:
+    # Return empty arrays with correct shapes
+    return np.array([], dtype=np.int64), np.array([]).reshape(0, -1)
+  
   model.eval()
   all_preds = []
   
@@ -148,6 +152,10 @@ def evaluate(
   
   # Ensure y is numpy array
   y = np.asarray(y)
+  
+  # Handle empty dataset
+  if len(X) == 0 or len(y) == 0:
+    return {}
   
   # Get predictions
   y_pred, all_preds = inference_all(model, X, batch_size, device)
