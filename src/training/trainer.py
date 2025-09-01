@@ -297,7 +297,10 @@ class MLPTrainer:
                 f"recall@10={val_metrics['recall_at_10']:.4f}, "
                 f"MRR@10={val_metrics['mrr_at_10']:.4f}")
       
-      # Checkpoint
+      # Increment step counter first
+      self.global_step += 1
+      
+      # Checkpoint after incrementing (so we don't checkpoint at step 0)
       if self.checkpoint_manager.should_save(self.global_step):
         self.checkpoint_manager.save(
           model=self.model,
@@ -307,8 +310,6 @@ class MLPTrainer:
           global_step=self.global_step,
           config=self.config
         )
-      
-      self.global_step += 1
     
     # Return epoch metrics
     return {

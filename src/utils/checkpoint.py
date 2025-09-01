@@ -93,11 +93,12 @@ def load_checkpoint(
   if not checkpoint_path.exists():
     raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
   
-  # Load checkpoint
+  # Load checkpoint with weights_only=True for security
+  # This is safe since we only save standard PyTorch objects and basic Python types
   if device is not None:
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
   else:
-    checkpoint = torch.load(checkpoint_path)
+    checkpoint = torch.load(checkpoint_path, weights_only=True)
   
   # Load model state if model provided
   if model is not None and 'model_state_dict' in checkpoint:
