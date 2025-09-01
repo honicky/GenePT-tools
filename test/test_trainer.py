@@ -27,7 +27,8 @@ class TestMLPTrainerInit:
       n_dims=100,
       n_hidden_layers=2,
       dropout=0.1,
-      device="cpu"
+      device="cpu",
+      load_validation_data=False
     )
     
     # Create trainer
@@ -57,7 +58,8 @@ class TestMLPTrainerInit:
       n_dims=200,
       n_hidden_layers=3,
       dropout=0.05,
-      device="cpu"
+      device="cpu",
+      load_validation_data=False
     )
     
     trainer = MLPTrainer(
@@ -80,7 +82,8 @@ class TestMLPTrainerInit:
     config = TrainingConfig(
       learning_rate=1e-3,
       weight_decay=1e-4,
-      device="cpu"
+      device="cpu",
+      load_validation_data=False
     )
     
     trainer = MLPTrainer(
@@ -116,7 +119,8 @@ class TestTrainBatch:
     config = TrainingConfig(
       n_dims=64,
       n_hidden_layers=1,
-      device="cpu"
+      device="cpu",
+      load_validation_data=False
     )
     
     trainer = MLPTrainer(
@@ -148,7 +152,8 @@ class TestTrainBatch:
       n_dims=64,
       n_hidden_layers=1,
       learning_rate=0.1,  # High learning rate for visible changes
-      device="cpu"
+      device="cpu",
+      load_validation_data=False
     )
     
     trainer = MLPTrainer(
@@ -229,7 +234,8 @@ class TestValidationDataLoading:
     
     config = TrainingConfig(
       n_dims=n_dims,
-      device="cpu"
+      device="cpu",
+      load_validation_data=False
     )
     
     trainer = MLPTrainer(
@@ -277,7 +283,8 @@ class TestValidationDataLoading:
     config = TrainingConfig(
       n_dims=n_dims,
       test_data_dir=test_dir,
-      device="cpu"
+      device="cpu",
+      load_validation_data=True  # This test needs to load validation data
     )
     
     trainer = MLPTrainer(
@@ -307,7 +314,8 @@ class TestEvaluation:
     
     config = TrainingConfig(
       n_dims=20,
-      device="cpu"
+      device="cpu",
+      load_validation_data=False
     )
     
     trainer = MLPTrainer(
@@ -347,7 +355,8 @@ class TestCheckpointing:
     
     config = TrainingConfig(
       n_dims=20,
-      device="cpu"
+      device="cpu",
+      load_validation_data=False
     )
     
     trainer = MLPTrainer(
@@ -392,6 +401,7 @@ class TestWandBIntegration:
     config = TrainingConfig(
       n_dims=20,
       device="cpu",
+      load_validation_data=False,
       wandb_project="test_project",
       wandb_entity="test_entity",
       wandb_run_name="test_run",
@@ -426,7 +436,10 @@ class TestWandBIntegration:
     config = TrainingConfig(
       n_dims=20,
       device="cpu",
-      wandb_project="test_project"
+      load_validation_data=False,
+      wandb_project="test_project",
+      test_data_dir=Path("/nonexistent"),  # Avoid loading real test data
+      verbose=False
     )
     
     # Should not raise error

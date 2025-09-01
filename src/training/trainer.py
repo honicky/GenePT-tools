@@ -89,7 +89,8 @@ class MLPTrainer:
     self.y_val_5k = None
     self.X_val_120k = None
     self.y_val_120k = None
-    self.load_validation_data()
+    if self.config.load_validation_data:
+      self.load_validation_data()
     
     # Initialize W&B if configured
     self.wandb_run = None

@@ -42,6 +42,7 @@ class TrainingConfig:
   num_workers: int = 0  # DataLoader workers (0 for no multiprocessing)
   mixed_precision: bool = False  # Use mixed precision training
   seed: int = 42
+  load_validation_data: bool = True  # Set to False for unit tests to speed them up
   
   # File shuffling
   shuffle_files_per_epoch: bool = True
