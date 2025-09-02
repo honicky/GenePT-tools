@@ -253,7 +253,8 @@ def load_cell_types(cell_types_file: Path = None):
     # Load from file
     df = pd.read_csv(cell_types_file)
     cell_types = df['cell_type'].tolist()
-    cell_type_codes = pd.Series(df['code'].values, index=df.index)
+    # Create series with cell type names as index and codes as values
+    cell_type_codes = pd.Series(df['code'].values, index=df['cell_type'].values)
   else:
     # Use default from notebook (simplified for demo)
     # In production, load from a reference file

@@ -125,7 +125,8 @@ class S3ParquetStreamDataset(IterableDataset):
       Array of integer codes
     """
     # Get the subset of cell types we're training on
-    training_cell_types = [self.cell_types[i] for i in self.cell_type_codes.values]
+    # cell_types is already the list of cell type names we're training on
+    training_cell_types = self.cell_types
     
     # Convert to categorical using only the training cell types
     categorical = cell_type_series.astype(

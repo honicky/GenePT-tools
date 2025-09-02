@@ -192,7 +192,9 @@ class MLPTrainer:
     X = df[available_cols].values.astype(np.float32)
     
     # Get the subset of cell types we're training on
-    training_cell_types = [self.cell_types[i] for i in self.cell_type_codes.values]
+    # cell_types is the list of cell type names we're training on
+    # cell_type_codes is a Series with cell type names as index and their codes as values
+    training_cell_types = self.cell_types
     
     # Encode labels using only the training cell types
     y = df["cell_type"].astype(
