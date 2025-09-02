@@ -158,7 +158,8 @@ class S3ParquetStreamDataset(IterableDataset):
     df = pd.read_parquet(file_path)
     
     # Get the subset of cell types we're training on
-    training_cell_types = [self.cell_types[i] for i in self.cell_type_codes.values]
+    # cell_types is already the list of cell type names we're training on
+    training_cell_types = self.cell_types
     
     # Filter to valid cell types
     valid_mask = df['cell_type'].isin(training_cell_types)
