@@ -49,6 +49,52 @@ uv run isort --gitignore .
 uv run pytest
 ```
 
+### Training the CellXGene MLP Model
+
+The `scripts/train_cellxgene_mlp.py` script trains an MLP classifier on CellXGene embeddings for cell type classification.
+
+#### Basic Usage
+```bash
+# Train with local data
+python scripts/train_cellxgene_mlp.py \
+  --local-data-dir data/cellxgene_embeddings/training_v1_shuffled \
+  --test-data-dir data/cellxgene_embeddings/test_v1 \
+  --cell-types-file cell_types_filtered.csv \
+  --epochs 2 \
+  --device cuda \
+  --wandb-project cellxgene-mlp
+
+# Stream directly from S3 (requires AWS credentials)
+python scripts/train_cellxgene_mlp.py \
+  --s3-bucket pythiomicsdata \
+  --s3-prefix cellxgene_v2/training_v1_shuffled \
+  --test-data-dir data/cellxgene_embeddings/test_v1 \
+  --download-if-missing \
+  --epochs 10 \
+  --device cuda
+
+# Resume from checkpoint
+python scripts/train_cellxgene_mlp.py \
+  --resume-from checkpoints/checkpoint_epoch5_batch1000.pt \
+  --local-data-dir data/cellxgene_embeddings/training_v1_shuffled \
+  --test-data-dir data/cellxgene_embeddings/test_v1
+```
+
+#### Key Parameters
+- `--local-data-dir`: Directory with pre-shuffled training parquet files
+- `--test-data-dir`: Directory with validation data
+- `--cell-types-file`: CSV file mapping cell type names to codes (optional)
+- `--epochs`: Number of training epochs (default: 10)
+- `--batch-size`: Batch size for training (default: 1024)
+- `--learning-rate`: Learning rate for AdamW optimizer (default: 4.366e-05)
+- `--checkpoint-dir`: Where to save model checkpoints (default: checkpoints/)
+- `--wandb-project`: Weights & Biases project for experiment tracking
+
+For full parameter documentation, run:
+```bash
+python scripts/train_cellxgene_mlp.py --help
+```
+
 ## Important files
 ```
 GenePT-tools/
