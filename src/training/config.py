@@ -63,6 +63,10 @@ class TrainingConfig:
   wandb_tags: List[str] = field(default_factory=list)
   verbose: bool = True
   
+  # Hierarchical metrics
+  enable_hierarchical_metrics: bool = True
+  ontology_cache_dir: Path = Path("data/ontology")
+  
   def __post_init__(self):
     """Convert string paths to Path objects and validate config."""
     # Convert paths

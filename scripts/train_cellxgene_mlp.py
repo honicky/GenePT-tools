@@ -237,6 +237,25 @@ def parse_args():
     help="Path to file containing cell types and codes (optional)"
   )
   
+  # Hierarchical metrics parameters
+  parser.add_argument(
+    "--enable-hierarchical-metrics",
+    action="store_true",
+    default=True,
+    help="Enable hierarchical evaluation using Cell Ontology (default: enabled)"
+  )
+  parser.add_argument(
+    "--disable-hierarchical-metrics",
+    action="store_true",
+    help="Disable hierarchical evaluation"
+  )
+  parser.add_argument(
+    "--ontology-cache-dir",
+    type=Path,
+    default=Path("data/ontology"),
+    help="Directory to cache Cell Ontology files"
+  )
+  
   return parser.parse_args()
 
 
@@ -272,6 +291,9 @@ def main():
   # Load cell types
   cell_types, cell_type_codes = load_cell_types(args.cell_types_file)
   print(f"Loaded {len(cell_types)} cell types, training on {len(cell_type_codes)} codes")
+  
+  # Determine if hierarchical metrics should be enabled
+  enable_hierarchical = args.enable_hierarchical_metrics and not args.disable_hierarchical_metrics
   
   # Create configuration
   config = TrainingConfig(
@@ -314,7 +336,10 @@ def main():
     shuffle_within_files=not args.no_shuffle_within_files,
     # Other
     seed=args.seed,
-    verbose=args.verbose
+    verbose=args.verbose,
+    # Hierarchical metrics
+    enable_hierarchical_metrics=enable_hierarchical,
+    ontology_cache_dir=args.ontology_cache_dir
   )
   
   # Print configuration
