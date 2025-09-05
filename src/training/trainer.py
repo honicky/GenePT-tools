@@ -14,8 +14,9 @@ from tqdm import tqdm
 from ..models.mlp_classifier import MLPClassifier
 from ..data_loading.s3_dataset import S3ParquetStreamDataset
 from ..utils.checkpoint import CheckpointManager, load_checkpoint, save_best_model
-from .metrics import evaluate
+from .metrics import evaluate, evaluate_with_hierarchy
 from .config import TrainingConfig
+from .ontology import CellOntologyManager
 
 # Optional wandb import
 try:
@@ -96,6 +97,18 @@ class MLPTrainer:
     self.wandb_run = None
     if config.wandb_project is not None:
       self.init_wandb()
+    
+    # Initialize ontology for hierarchical metrics
+    self.ontology_graph = None
+    if config.enable_hierarchical_metrics:
+      try:
+        print("Loading Cell Ontology for hierarchical metrics...")
+        ontology_manager = CellOntologyManager(config.ontology_cache_dir)
+        self.ontology_graph = ontology_manager.build_cell_type_graph()
+        print(f"Loaded ontology with {len(self.ontology_graph.nodes)} cell types")
+      except Exception as e:
+        print(f"Warning: Could not load Cell Ontology: {e}")
+        print("Continuing without hierarchical metrics")
   
   def create_model(self) -> nn.Module:
     """Create the MLP model."""
@@ -286,18 +299,22 @@ class MLPTrainer:
       if self.global_step % self.config.eval_every_n_batches == 0 and self.X_val_5k is not None:
         val_metrics = self.evaluate_validation(use_5k=True)
         if self.config.verbose and val_metrics and 'logloss' in val_metrics:
-          print(f"\n[Step {self.global_step}] Val-5k metrics: "
-                f"loss={val_metrics['logloss']:.4f}, "
-                f"recall@10={val_metrics['recall_at_10']:.4f}")
+          metrics_str = (f"loss={val_metrics['logloss']:.4f}, "
+                        f"recall@10={val_metrics['recall_at_10']:.4f}")
+          if 'hierarchical_f1' in val_metrics:
+            metrics_str += f", h-F1={val_metrics['hierarchical_f1']:.4f}"
+          print(f"\n[Step {self.global_step}] Val-5k metrics: {metrics_str}")
       
       # Less frequent evaluation on full validation set
       if self.global_step % self.config.eval_full_every_n_batches == 0 and self.X_val_120k is not None:
         val_metrics = self.evaluate_validation(use_5k=False)
         if self.config.verbose and val_metrics and 'logloss' in val_metrics:
-          print(f"\n[Step {self.global_step}] Val-120k metrics: "
-                f"loss={val_metrics['logloss']:.4f}, "
-                f"recall@10={val_metrics['recall_at_10']:.4f}, "
-                f"MRR@10={val_metrics['mrr_at_10']:.4f}")
+          metrics_str = (f"loss={val_metrics['logloss']:.4f}, "
+                        f"recall@10={val_metrics['recall_at_10']:.4f}, "
+                        f"MRR@10={val_metrics['mrr_at_10']:.4f}")
+          if 'hierarchical_f1' in val_metrics:
+            metrics_str += f", h-F1={val_metrics['hierarchical_f1']:.4f}"
+          print(f"\n[Step {self.global_step}] Val-120k metrics: {metrics_str}")
       
       # Increment step counter first
       self.global_step += 1
@@ -338,15 +355,31 @@ class MLPTrainer:
     else:
       return {}
     
-    # Evaluate
-    metrics = evaluate(
-      model=self.model,
-      X=X,
-      y=y,
-      num_classes=self.num_classes,
-      batch_size=self.config.batch_size,
-      device=self.device
-    )
+    # Evaluate with hierarchical metrics if available
+    if self.ontology_graph is not None:
+      # Create cell type to index mapping
+      cell_type_to_idx = {ct: i for i, ct in enumerate(self.cell_types[:self.num_classes])}
+      
+      metrics = evaluate_with_hierarchy(
+        model=self.model,
+        X=X,
+        y=y,
+        cell_types=self.cell_types[:self.num_classes],
+        cell_type_to_idx=cell_type_to_idx,
+        ontology_graph=self.ontology_graph,
+        batch_size=self.config.batch_size,
+        device=self.device
+      )
+    else:
+      # Standard evaluation
+      metrics = evaluate(
+        model=self.model,
+        X=X,
+        y=y,
+        num_classes=self.num_classes,
+        batch_size=self.config.batch_size,
+        device=self.device
+      )
     
     # Add prefix to metrics
     prefixed_metrics = {f"{prefix}_{k}": v for k, v in metrics.items()}
