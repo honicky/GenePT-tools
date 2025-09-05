@@ -45,7 +45,7 @@ def download_file(url: str,
     if not filename:
       raise ValueError(
         "Could not determine filename from URL. Please provide output_path.")
-    output_path = Path(__file__).parent.parent / "data" / filename
+    output_path = Path(__file__).parent.parent.parent / "data" / filename
   else:
     output_path = Path(output_path)
 
@@ -161,7 +161,7 @@ def setup_data_dir():
     """
 
   # Create data directory if it doesn't exist
-  repo_path = Path().absolute().parent
+  repo_path = Path(__file__).parent.parent.parent 
   data_dir = repo_path / "data"
   data_dir.mkdir(exist_ok=True)
 

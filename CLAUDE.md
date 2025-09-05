@@ -89,6 +89,11 @@ uv run pytest -v
 - Uses fixtures for test data setup
 - Includes conditional imports for optional dependencies (torch)
 - Tests both unit functionality and integration scenarios
+  - unit tests should run quickly, and should separated into different suites than integrations tests
+  - core logic functions should be pure functions (no side effects) as long as that doesn't introduce undue complexity.  This will make unit testing much cleaner
+  - integration tests should not leave any state in production systems
+  
+
 
 ## Important Notes
 
