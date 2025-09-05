@@ -252,9 +252,10 @@ class TestEvaluate:
     """Test evaluation with perfect predictions."""
     # Create a model that always predicts correctly
     class PerfectModel(nn.Module):
-      def __init__(self, y_true):
+      def __init__(self, y_true, X_true):
         super().__init__()
         self.y_true = torch.tensor(y_true)
+        self.X_true = torch.tensor(X_true, dtype=torch.float32)
       
       def forward(self, x):
         batch_size = x.shape[0]
@@ -262,9 +263,17 @@ class TestEvaluate:
         
         # Create one-hot encoding with some noise
         logits = torch.randn(batch_size, num_classes) * 0.1
+        
+        # Match input samples to find their true labels
         for i in range(batch_size):
+          # Find which sample this is by comparing with X_true
+          # Use sum of features as a simple identifier
+          x_sum = x[i].sum()
+          diffs = torch.abs(self.X_true.sum(dim=1) - x_sum)
+          true_idx = torch.argmin(diffs).item()
+          
           # Make true class have highest logit
-          logits[i, self.y_true[i]] = 10.0
+          logits[i, self.y_true[true_idx]] = 10.0
         return logits
     
     # Setup
@@ -273,7 +282,7 @@ class TestEvaluate:
     X = np.random.randn(n_samples, 20).astype(np.float32)
     y = np.random.randint(0, num_classes, n_samples)
     
-    model = PerfectModel(y)
+    model = PerfectModel(y, X)
     model.eval()
     
     # Evaluate
