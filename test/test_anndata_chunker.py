@@ -12,8 +12,11 @@ try:
 except ImportError:
   _torch_available = False
 
-from src.utils import (
-  AnnDataChunker,
+# Import public API from src.utils
+from src.utils import AnnDataChunker
+
+# Import private functions directly for testing
+from src.utils.__utils import (
   _load_csr_matrix_components,
   _load_var_metadata,
   _load_obs_metadata,

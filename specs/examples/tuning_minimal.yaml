@@ -1,0 +1,35 @@
+# Minimal Hyperparameter Tuning Configuration
+# Simplest possible configuration for getting started
+
+optuna:
+  study_name: "my_study"
+  direction: "minimize"  # or "maximize" 
+  metric_to_optimize: "val_loss"
+  n_trials: 20
+  n_epochs_per_trial: 2
+
+hyperparameters:
+  learning_rate:
+    type: "float"
+    low: 1e-5
+    high: 1e-2
+    log: true  # Use log scale
+  
+  dropout:
+    type: "float"
+    low: 0.0
+    high: 0.5
+  
+  n_hidden_layers:
+    type: "int"
+    low: 1
+    high: 4
+  
+  batch_size:
+    type: "categorical"
+    choices: [512, 1024, 2048]
+
+fixed_params:
+  epochs: 10  # For final training after tuning
+  device: "auto"
+  seed: 42

@@ -18,6 +18,20 @@ except ImportError:
   pass
 import numpy as np
 
+__all__ = [
+    # Public API - only export public functions and classes
+    "AnnDataChunker",
+    "download_file",
+    "download_gdrive_file",
+    "extract_gz",
+    "extract_zip",
+    "get_anndata_file_info",
+    "get_gene_embeddings",
+    "load_subset_anndata",
+    "print_memory_stats",
+    "setup_data_dir",
+]
+
 
 def download_file(url: str,
                   output_path: Union[Path, str, None] = None,

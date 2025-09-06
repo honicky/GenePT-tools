@@ -11,12 +11,23 @@ import json
 from pathlib import Path
 import pandas as pd
 import numpy as np
+import logging
 
 # Add project root to path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from src.training.trainer import MLPTrainer
 from src.training.config import TrainingConfig
+
+# Optional import for hyperparameter tuning
+try:
+  from src.training.optuna_manager import OptunaManager
+  import optuna
+  OPTUNA_AVAILABLE = True
+except ImportError:
+  OPTUNA_AVAILABLE = False
+
+logging.basicConfig(level=logging.INFO)
 
 
 def parse_args():
@@ -256,6 +267,32 @@ def parse_args():
     help="Directory to cache Cell Ontology files"
   )
   
+  # Hyperparameter tuning parameters
+  parser.add_argument(
+    "--tuning-config",
+    type=Path,
+    default=None,
+    help="Path to hyperparameter tuning configuration file (enables tuning mode when provided)"
+  )
+  parser.add_argument(
+    "--tuning-n-trials",
+    type=int,
+    default=None,
+    help="Override number of trials from config"
+  )
+  parser.add_argument(
+    "--tuning-timeout",
+    type=int,
+    default=None,
+    help="Maximum time in seconds for tuning"
+  )
+  parser.add_argument(
+    "--tuning-storage",
+    type=str,
+    default=None,
+    help="Optuna study database URL (e.g., sqlite:///optuna.db)"
+  )
+  
   return parser.parse_args()
 
 
@@ -284,6 +321,36 @@ def load_cell_types(cell_types_file: Path = None):
   return cell_types, cell_type_codes
 
 
+def run_training_with_config(config: TrainingConfig, cell_types: list, cell_type_codes: pd.Series, trial=None):
+  """Run training with a given configuration.
+  
+  Args:
+    config: Training configuration
+    cell_types: List of cell type names
+    cell_type_codes: Series mapping cell types to codes
+    trial: Optional Optuna trial for hyperparameter tuning
+    
+  Returns:
+    Final metrics dictionary
+  """
+  # Create trainer
+  trainer = MLPTrainer(
+    config=config,
+    cell_types=cell_types,
+    cell_type_codes=cell_type_codes
+  )
+  
+  # Add Optuna trial if provided
+  if trial is not None:
+    trainer.optuna_trial = trial
+  
+  # Run training
+  print("Starting training...")
+  final_metrics = trainer.run()
+  
+  return final_metrics
+
+
 def main():
   """Main training function."""
   args = parse_args()
@@ -292,75 +359,151 @@ def main():
   cell_types, cell_type_codes = load_cell_types(args.cell_types_file)
   print(f"Loaded {len(cell_types)} cell types, training on {len(cell_type_codes)} codes")
   
-  # Determine if hierarchical metrics should be enabled
-  enable_hierarchical = args.enable_hierarchical_metrics and not args.disable_hierarchical_metrics
-  
-  # Create configuration
-  config = TrainingConfig(
-    # Data
-    local_data_dir=args.local_data_dir,
-    test_data_dir=args.test_data_dir,
-    s3_bucket=args.s3_bucket,
-    s3_prefix=args.s3_prefix,
-    aws_profile=args.aws_profile,
-    download_if_missing=args.download_if_missing and not args.no_download,
-    # Model
-    n_dims=args.n_dims,
-    n_hidden_layers=args.n_hidden_layers,
-    dropout=args.dropout,
-    # Training
-    learning_rate=args.learning_rate,
-    weight_decay=args.weight_decay,
-    batch_size=args.batch_size,
-    epochs=args.epochs,
-    # Evaluation
-    eval_every_n_batches=args.eval_every_n_batches,
-    eval_full_every_n_batches=args.eval_full_every_n_batches,
-    checkpoint_every_n_batches=args.checkpoint_every_n_batches,
-    # System
-    device=args.device,
-    num_workers=args.num_workers,
-    mixed_precision=args.mixed_precision,
-    # Output
-    checkpoint_dir=args.checkpoint_dir,
-    wandb_project=args.wandb_project,
-    wandb_entity=args.wandb_entity,
-    wandb_run_name=args.wandb_run_name,
-    wandb_tags=args.wandb_tags,
-    # Resume and subset
-    resume_from=args.resume_from,
-    start_batch_file=args.start_batch_file,
-    end_batch_file=args.end_batch_file,
-    # Shuffling
-    shuffle_files_per_epoch=not args.no_shuffle_files,
-    shuffle_within_files=not args.no_shuffle_within_files,
-    # Other
-    seed=args.seed,
-    verbose=args.verbose,
-    # Hierarchical metrics
-    enable_hierarchical_metrics=enable_hierarchical,
-    ontology_cache_dir=args.ontology_cache_dir
-  )
-  
-  # Print configuration
-  print("\n" + "="*60)
-  print("Training Configuration:")
-  print("="*60)
-  config_dict = config.to_dict()
-  for key, value in config_dict.items():
-    print(f"  {key}: {value}")
-  print("="*60 + "\n")
-  
-  # Create trainer
-  trainer = MLPTrainer(
-    config=config,
-    cell_types=cell_types,
-    cell_type_codes=cell_type_codes
-  )
-  
-  # Run training
-  print("Starting training...")
-  final_metrics = trainer.run()
+  # Check if we're in tuning mode
+  if args.tuning_config:
+    if not OPTUNA_AVAILABLE:
+      print("Error: Optuna is required for hyperparameter tuning. Install with: pip install optuna")
+      sys.exit(1)
+    
+    print("\n" + "="*60)
+    print("Hyperparameter Tuning Mode")
+    print("="*60)
+    
+    # Create OptunaManager
+    manager = OptunaManager(
+      config_path=args.tuning_config,
+      storage=args.tuning_storage
+    )
+    
+    # Create trainer factory
+    def create_and_run_trainer(trial: optuna.Trial):
+      # Get suggested config
+      config = manager.suggest_hyperparameters(trial)
+      
+      # Override with command-line arguments if provided
+      if args.local_data_dir:
+        config.local_data_dir = args.local_data_dir
+      if args.test_data_dir:
+        config.test_data_dir = args.test_data_dir
+      if args.checkpoint_dir:
+        config.checkpoint_dir = args.checkpoint_dir
+      if args.wandb_project:
+        config.wandb_project = args.wandb_project
+      if args.wandb_entity:
+        config.wandb_entity = args.wandb_entity
+      
+      # Add trial number to wandb run name
+      if config.wandb_project:
+        config.wandb_run_name = f"trial_{trial.number}"
+        config.wandb_tags = ["optuna", f"trial_{trial.number}"]
+      
+      # Run training
+      final_metrics = run_training_with_config(config, cell_types, cell_type_codes, trial)
+      
+      # Report intermediate values for pruning
+      for step in range(0, len(final_metrics.get('val_loss_history', [])), 10):
+        if 'val_loss_history' in final_metrics and step < len(final_metrics['val_loss_history']):
+          trial.report(final_metrics['val_loss_history'][step], step)
+          
+          # Check if trial should be pruned
+          if trial.should_prune():
+            raise optuna.TrialPruned()
+      
+      # Return optimization metric
+      return final_metrics
+    
+    # Run optimization
+    manager.run_optimization(
+      trainer_factory=create_and_run_trainer,
+      n_trials=args.tuning_n_trials,
+      timeout=args.tuning_timeout
+    )
+    
+    # Get best configuration
+    print("\n" + "="*60)
+    print("Optimization Complete - Training Final Model")
+    print("="*60)
+    
+    best_config = manager.get_best_config()
+    
+    # Override with command-line arguments for final training
+    if args.local_data_dir:
+      best_config.local_data_dir = args.local_data_dir
+    if args.test_data_dir:
+      best_config.test_data_dir = args.test_data_dir
+    if args.checkpoint_dir:
+      best_config.checkpoint_dir = args.checkpoint_dir
+    
+    # Run final training with best config
+    final_metrics = run_training_with_config(best_config, cell_types, cell_type_codes)
+    
+    # Save optimization results
+    results_file = best_config.checkpoint_dir / "optuna_results.json"
+    manager.save_results(results_file)
+    
+  else:
+    # Normal training mode (non-tuning)
+    # Determine if hierarchical metrics should be enabled
+    enable_hierarchical = args.enable_hierarchical_metrics and not args.disable_hierarchical_metrics
+    
+    # Create configuration
+    config = TrainingConfig(
+      # Data
+      local_data_dir=args.local_data_dir,
+      test_data_dir=args.test_data_dir,
+      s3_bucket=args.s3_bucket,
+      s3_prefix=args.s3_prefix,
+      aws_profile=args.aws_profile,
+      download_if_missing=args.download_if_missing and not args.no_download,
+      # Model
+      n_dims=args.n_dims,
+      n_hidden_layers=args.n_hidden_layers,
+      dropout=args.dropout,
+      # Training
+      learning_rate=args.learning_rate,
+      weight_decay=args.weight_decay,
+      batch_size=args.batch_size,
+      epochs=args.epochs,
+      # Evaluation
+      eval_every_n_batches=args.eval_every_n_batches,
+      eval_full_every_n_batches=args.eval_full_every_n_batches,
+      checkpoint_every_n_batches=args.checkpoint_every_n_batches,
+      # System
+      device=args.device,
+      num_workers=args.num_workers,
+      mixed_precision=args.mixed_precision,
+      # Output
+      checkpoint_dir=args.checkpoint_dir,
+      wandb_project=args.wandb_project,
+      wandb_entity=args.wandb_entity,
+      wandb_run_name=args.wandb_run_name,
+      wandb_tags=args.wandb_tags,
+      # Resume and subset
+      resume_from=args.resume_from,
+      start_batch_file=args.start_batch_file,
+      end_batch_file=args.end_batch_file,
+      # Shuffling
+      shuffle_files_per_epoch=not args.no_shuffle_files,
+      shuffle_within_files=not args.no_shuffle_within_files,
+      # Other
+      seed=args.seed,
+      verbose=args.verbose,
+      # Hierarchical metrics
+      enable_hierarchical_metrics=enable_hierarchical,
+      ontology_cache_dir=args.ontology_cache_dir
+    )
+    
+    # Print configuration
+    print("\n" + "="*60)
+    print("Training Configuration:")
+    print("="*60)
+    config_dict = config.to_dict()
+    for key, value in config_dict.items():
+      print(f"  {key}: {value}")
+    print("="*60 + "\n")
+    
+    # Run training
+    final_metrics = run_training_with_config(config, cell_types, cell_type_codes)
   
   # Print final metrics
   print("\n" + "="*60)

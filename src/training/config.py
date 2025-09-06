@@ -32,6 +32,13 @@ class TrainingConfig:
   batch_size: int = 1024
   epochs: int = 10
   
+  # Advanced optimization parameters (for hyperparameter tuning)
+  optimizer_type: str = "adam"  # Options: adam, adamw, sgd
+  lr_scheduler: str = "none"  # Options: none, cosine, step, exponential
+  lr_scheduler_params: dict = field(default_factory=dict)  # Scheduler-specific params
+  label_smoothing: float = 0.0  # Label smoothing factor (0.0 = no smoothing)
+  gradient_clip_val: Optional[float] = None  # Max gradient norm for clipping
+  
   # Evaluation parameters
   eval_every_n_batches: int = 10  # Evaluate on 5k validation set
   eval_full_every_n_batches: int = 250  # Evaluate on 120k validation set

@@ -1,0 +1,66 @@
+# Test Configuration for Hyperparameter Tuning
+# Used for unit tests and CI/CD - NOT for actual training
+# Minimal settings for fast test execution
+
+# Optuna Study Configuration
+optuna:
+  study_name: "test_cellxgene_mlp"
+  direction: "minimize"
+  metric_to_optimize: "val_loss"
+  n_trials: 2  # Just 2 trials for testing
+  n_epochs_per_trial: 1  # Single epoch for quick test
+  sampler:
+    type: "TPESampler"
+    n_startup_trials: 1
+    seed: 42
+
+# Hyperparameter Search Space  
+hyperparameters:
+  n_dims:
+    type: "categorical"
+    choices: [100, 200]
+    default: 100
+  
+  n_hidden_layers:
+    type: "int"
+    low: 1
+    high: 2
+    default: 1
+  
+  dropout:
+    type: "float"
+    low: 0.0
+    high: 0.2
+    default: 0.1
+  
+  learning_rate:
+    type: "float"
+    low: 1e-4
+    high: 1e-3
+    default: 5e-4
+    log: true
+  
+  batch_size:
+    type: "categorical"
+    choices: [256, 512]
+    default: 256
+
+# Fixed parameters
+fixed_params:
+  epochs: 1  # Override to 1 for testing
+  eval_every_n_batches: 100
+  eval_full_every_n_batches: 500
+  checkpoint_every_n_batches: 1000
+  device: "cpu"  # Use CPU for testing
+  seed: 42
+
+# Warm-start configurations (optional)
+best_configs:
+  - name: "baseline"
+    hyperparameters:
+      n_dims: 100
+      n_hidden_layers: 1
+      dropout: 0.05
+      learning_rate: 1e-4
+      batch_size: 256
+    priority: 1

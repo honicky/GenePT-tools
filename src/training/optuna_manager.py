@@ -1,0 +1,467 @@
+"""Optuna-based hyperparameter optimization manager for CellXGene MLP training."""
+
+import json
+import yaml
+import logging
+from pathlib import Path
+from typing import Dict, Any, Optional, Callable, List
+import numpy as np
+
+try:
+  import optuna
+  from optuna.trial import Trial, FrozenTrial
+  OPTUNA_AVAILABLE = True
+except ImportError:
+  OPTUNA_AVAILABLE = False
+  Trial = Any
+  FrozenTrial = Any
+
+try:
+  import wandb
+  WANDB_AVAILABLE = True
+except ImportError:
+  WANDB_AVAILABLE = False
+
+from .config import TrainingConfig
+
+logger = logging.getLogger(__name__)
+
+
+class OptunaManager:
+  """Manages Optuna study and hyperparameter optimization."""
+  
+  def __init__(self, config_path: Path, storage: Optional[str] = None):
+    """Initialize OptunaManager with configuration.
+    
+    Args:
+      config_path: Path to YAML configuration file
+      storage: Optional database URL for study persistence
+    """
+    if not OPTUNA_AVAILABLE:
+      raise ImportError("Optuna is required for hyperparameter tuning. Install with: pip install optuna")
+    
+    self.config_path = config_path
+    self.config = self._load_yaml_config(config_path)
+    self.storage = storage or self.config.get('optuna', {}).get('storage')
+    
+    # Create or load study
+    self.study = self._create_study()
+    
+    # Add warm-start trials if configured
+    self._add_warm_start_trials()
+  
+  def _load_yaml_config(self, path: Path) -> Dict:
+    """Load and validate YAML configuration.
+    
+    Args:
+      path: Path to YAML file
+      
+    Returns:
+      Parsed configuration dictionary
+    """
+    with open(path, 'r') as f:
+      config = yaml.safe_load(f)
+    
+    # Validate required sections
+    required_sections = ['optuna', 'hyperparameters']
+    for section in required_sections:
+      if section not in config:
+        raise ValueError(f"Missing required section '{section}' in config file")
+    
+    return config
+  
+  def _create_study(self) -> optuna.Study:
+    """Create or load Optuna study.
+    
+    Returns:
+      Optuna Study object
+    """
+    optuna_config = self.config.get('optuna', {})
+    
+    # Create sampler
+    sampler_config = optuna_config.get('sampler', {})
+    sampler_type = sampler_config.get('type', 'TPESampler')
+    
+    if sampler_type == 'TPESampler':
+      sampler = optuna.samplers.TPESampler(
+        n_startup_trials=sampler_config.get('n_startup_trials', 10),
+        seed=sampler_config.get('seed', 42)
+      )
+    else:
+      sampler = None  # Use default
+    
+    # Create pruner
+    pruner_config = optuna_config.get('pruner', {})
+    pruner_type = pruner_config.get('type', 'MedianPruner')
+    
+    if pruner_type == 'MedianPruner':
+      pruner = optuna.pruners.MedianPruner(
+        n_startup_trials=pruner_config.get('n_startup_trials', 5),
+        n_warmup_steps=pruner_config.get('n_warmup_steps', 100),
+        interval_steps=pruner_config.get('interval_steps', 10)
+      )
+    else:
+      pruner = None  # No pruning
+    
+    # Create or load study
+    study = optuna.create_study(
+      study_name=optuna_config.get('study_name', 'cellxgene_mlp_optimization'),
+      direction=optuna_config.get('direction', 'minimize'),
+      storage=self.storage,
+      load_if_exists=optuna_config.get('load_if_exists', True),
+      sampler=sampler,
+      pruner=pruner
+    )
+    
+    logger.info(f"Created/loaded study '{study.study_name}' with {len(study.trials)} existing trials")
+    
+    return study
+  
+  def _add_warm_start_trials(self):
+    """Add warm-start configurations as completed trials."""
+    best_configs = self.config.get('best_configs', [])
+    
+    if not best_configs:
+      return
+    
+    # Sort by priority if specified (lower priority = added first)
+    best_configs = sorted(
+      best_configs,
+      key=lambda x: x.get('priority', float('inf'))
+    )
+    
+    optuna_metric = self.config['optuna'].get('metric_to_optimize', 'val_loss')
+    
+    for cfg in best_configs:
+      # Check if we should add this config
+      if self._should_add_warm_start(cfg):
+        # Create distributions for parameters
+        distributions = self._create_distributions(cfg['hyperparameters'])
+        
+        # Get metric value if available
+        value = None
+        if 'metrics' in cfg and optuna_metric in cfg['metrics']:
+          value = cfg['metrics'][optuna_metric]
+        
+        # Create and add trial
+        trial = optuna.trial.create_trial(
+          params=cfg['hyperparameters'],
+          distributions=distributions,
+          value=value
+        )
+        
+        self.study.add_trial(trial)
+        logger.info(f"Added warm-start trial '{cfg['name']}' with {len(cfg['hyperparameters'])} parameters")
+    
+    # Handle WandB warm-start if configured
+    self._add_wandb_warm_start()
+  
+  def _should_add_warm_start(self, config: Dict) -> bool:
+    """Determine if a warm-start config should be added.
+    
+    Args:
+      config: Warm-start configuration
+      
+    Returns:
+      True if config should be added
+    """
+    # Always add for now; could implement progressive warm-start logic here
+    return True
+  
+  def _create_distributions(self, params: Dict) -> Dict:
+    """Create Optuna distributions for parameters.
+    
+    Args:
+      params: Parameter values
+      
+    Returns:
+      Dictionary of Optuna distributions
+    """
+    distributions = {}
+    hyperparams_spec = self.config['hyperparameters']
+    
+    for param_name, param_value in params.items():
+      if param_name not in hyperparams_spec:
+        continue
+      
+      spec = hyperparams_spec[param_name]
+      param_type = spec.get('type')
+      
+      if param_type == 'categorical':
+        distributions[param_name] = optuna.distributions.CategoricalDistribution(
+          choices=spec['choices']
+        )
+      elif param_type == 'float':
+        if spec.get('log', False):
+          distributions[param_name] = optuna.distributions.FloatDistribution(
+            low=spec['low'],
+            high=spec['high'],
+            log=True
+          )
+        else:
+          distributions[param_name] = optuna.distributions.FloatDistribution(
+            low=spec['low'],
+            high=spec['high']
+          )
+      elif param_type == 'int':
+        distributions[param_name] = optuna.distributions.IntDistribution(
+          low=spec['low'],
+          high=spec['high']
+        )
+    
+    return distributions
+  
+  def _add_wandb_warm_start(self):
+    """Load warm-start configurations from Weights & Biases."""
+    warm_start_config = self.config.get('warm_start_strategy', {})
+    auto_load = warm_start_config.get('auto_load', {})
+    
+    if not auto_load.get('enabled', False) or not WANDB_AVAILABLE:
+      return
+    
+    if auto_load.get('from_wandb'):
+      # Parse WandB URLs from best_configs
+      for cfg in self.config.get('best_configs', []):
+        if 'wandb_url' in cfg:
+          self._load_from_wandb_url(cfg['wandb_url'])
+  
+  def _load_from_wandb_url(self, url: str):
+    """Load configuration from WandB URL.
+    
+    Args:
+      url: WandB run URL
+    """
+    if not WANDB_AVAILABLE:
+      logger.warning(f"WandB not available, skipping URL: {url}")
+      return
+    
+    try:
+      # Parse URL to get entity, project, run_id
+      # Format: https://wandb.ai/entity/project/runs/run_id
+      parts = url.split('/')
+      entity = parts[-4]
+      project = parts[-3]
+      run_id = parts[-1]
+      
+      api = wandb.Api()
+      run = api.run(f"{entity}/{project}/{run_id}")
+      
+      # Extract hyperparameters from config
+      params = {}
+      for key in self.config['hyperparameters'].keys():
+        if key in run.config:
+          params[key] = run.config[key]
+      
+      # Get metric value
+      optuna_metric = self.config['optuna'].get('metric_to_optimize', 'val_loss')
+      value = run.summary.get(optuna_metric)
+      
+      # Create trial
+      distributions = self._create_distributions(params)
+      trial = optuna.trial.create_trial(
+        params=params,
+        distributions=distributions,
+        value=value
+      )
+      
+      self.study.add_trial(trial)
+      logger.info(f"Added warm-start trial from WandB run {run_id}")
+      
+    except Exception as e:
+      logger.warning(f"Failed to load from WandB URL {url}: {e}")
+  
+  def suggest_hyperparameters(self, trial: Trial) -> TrainingConfig:
+    """Suggest hyperparameters for a trial.
+    
+    Args:
+      trial: Optuna trial object
+      
+    Returns:
+      TrainingConfig with suggested hyperparameters
+    """
+    params = {}
+    hyperparams_spec = self.config['hyperparameters']
+    
+    for param_name, spec in hyperparams_spec.items():
+      # Check for conditional parameters
+      if 'condition' in spec:
+        if not self._evaluate_condition(spec['condition'], params):
+          continue
+      
+      # Suggest parameter based on type
+      param_type = spec.get('type')
+      
+      if param_type == 'categorical':
+        params[param_name] = trial.suggest_categorical(param_name, spec['choices'])
+      elif param_type == 'float':
+        params[param_name] = trial.suggest_float(
+          param_name,
+          spec['low'],
+          spec['high'],
+          log=spec.get('log', False)
+        )
+      elif param_type == 'int':
+        params[param_name] = trial.suggest_int(
+          param_name,
+          spec['low'],
+          spec['high']
+        )
+    
+    # Merge with fixed parameters
+    fixed_params = self.config.get('fixed_params', {})
+    all_params = {**fixed_params, **params}
+    
+    # Create TrainingConfig
+    return self._create_training_config(all_params)
+  
+  def _evaluate_condition(self, condition: str, params: Dict) -> bool:
+    """Evaluate a conditional parameter expression.
+    
+    Args:
+      condition: Condition string (e.g., "lr_scheduler == 'cosine'")
+      params: Current parameters
+      
+    Returns:
+      True if condition is met
+    """
+    try:
+      # Simple evaluation - in production, use safer evaluation
+      return eval(condition, {"__builtins__": {}}, params)
+    except:
+      return False
+  
+  def _create_training_config(self, params: Dict) -> TrainingConfig:
+    """Create TrainingConfig from parameters.
+    
+    Args:
+      params: All parameters (fixed + suggested)
+      
+    Returns:
+      TrainingConfig instance
+    """
+    # Map parameters to TrainingConfig fields
+    config_kwargs = {}
+    
+    # Direct mappings
+    direct_mappings = [
+      'n_dims', 'n_hidden_layers', 'dropout', 'learning_rate', 
+      'weight_decay', 'batch_size', 'mixed_precision',
+      's3_bucket', 's3_prefix', 'aws_profile',
+      'eval_every_n_batches', 'eval_full_every_n_batches',
+      'checkpoint_every_n_batches', 'device', 'num_workers',
+      'seed', 'shuffle_files_per_epoch', 'shuffle_within_files',
+      'enable_hierarchical_metrics', 'ontology_cache_dir'
+    ]
+    
+    for key in direct_mappings:
+      if key in params:
+        config_kwargs[key] = params[key]
+    
+    # Handle Path conversions
+    path_fields = ['local_data_dir', 'test_data_dir', 'checkpoint_dir', 'ontology_cache_dir']
+    for field in path_fields:
+      if field in params and params[field] is not None:
+        config_kwargs[field] = Path(params[field])
+    
+    # Set epochs for quick evaluation during tuning
+    config_kwargs['epochs'] = self.config['optuna'].get('n_epochs_per_trial', 2)
+    
+    return TrainingConfig(**config_kwargs)
+  
+  def run_optimization(
+    self,
+    trainer_factory: Callable[[Trial], Any],
+    n_trials: Optional[int] = None,
+    timeout: Optional[int] = None
+  ):
+    """Run hyperparameter optimization.
+    
+    Args:
+      trainer_factory: Function that creates and runs a trainer given a trial
+      n_trials: Number of trials to run (overrides config)
+      timeout: Maximum time in seconds (overrides config)
+    """
+    n_trials = n_trials or self.config['optuna'].get('n_trials', 100)
+    timeout = timeout or self.config.get('resources', {}).get('timeout_per_trial')
+    
+    # Create objective function
+    def objective(trial: Trial) -> float:
+      try:
+        # Create and run trainer
+        trainer = trainer_factory(trial)
+        metrics = trainer.run()
+        
+        # Get optimization metric
+        metric_name = self.config['optuna'].get('metric_to_optimize', 'val_loss')
+        value = metrics.get(metric_name)
+        
+        if value is None:
+          raise ValueError(f"Metric '{metric_name}' not found in trainer results")
+        
+        return value
+        
+      except Exception as e:
+        logger.error(f"Trial {trial.number} failed: {e}")
+        raise
+    
+    # Add progress callback
+    def progress_callback(study: optuna.Study, trial: FrozenTrial):
+      logger.info(f"Trial {trial.number} finished with value: {trial.value}")
+      if study.best_trial:
+        logger.info(f"Best value so far: {study.best_value} (trial {study.best_trial.number})")
+    
+    # Run optimization
+    self.study.optimize(
+      objective,
+      n_trials=n_trials,
+      timeout=timeout,
+      callbacks=[progress_callback]
+    )
+  
+  def get_best_config(self) -> TrainingConfig:
+    """Get the best configuration found.
+    
+    Returns:
+      TrainingConfig with best hyperparameters
+    """
+    if not self.study.trials:
+      raise ValueError("No trials completed yet")
+    
+    best_trial = self.study.best_trial
+    best_params = best_trial.params
+    
+    # Merge with fixed parameters
+    fixed_params = self.config.get('fixed_params', {})
+    all_params = {**fixed_params, **best_params}
+    
+    # Create config with full epochs for final training
+    config = self._create_training_config(all_params)
+    
+    # Override with full epochs for final training
+    if 'epochs' in self.config.get('fixed_params', {}):
+      config.epochs = self.config['fixed_params']['epochs']
+    else:
+      config.epochs = 10  # Default full training epochs
+    
+    return config
+  
+  def save_results(self, output_path: Path):
+    """Save optimization results to file.
+    
+    Args:
+      output_path: Path to save results
+    """
+    results = {
+      'best_trial': {
+        'number': self.study.best_trial.number,
+        'value': self.study.best_value,
+        'params': self.study.best_params
+      },
+      'n_trials': len(self.study.trials),
+      'study_name': self.study.study_name
+    }
+    
+    with open(output_path, 'w') as f:
+      json.dump(results, f, indent=2, default=str)
+    
+    logger.info(f"Saved optimization results to {output_path}")

@@ -1,0 +1,77 @@
+# Mixed Fixed and Optimized Parameters Example
+# Shows how to fix some parameters while optimizing others
+# Useful when you want to tune only specific aspects of your model
+
+optuna:
+  study_name: "mixed_parameter_tuning"
+  direction: "minimize"
+  metric_to_optimize: "val_loss"
+  n_trials: 30
+  n_epochs_per_trial: 3
+
+# Only these parameters will be optimized
+hyperparameters:
+  # Tune regularization
+  dropout:
+    type: "float"
+    low: 0.0
+    high: 0.5
+    default: 0.1
+  
+  weight_decay:
+    type: "float"
+    low: 1e-6
+    high: 1e-3
+    default: 1e-5
+    log: true
+  
+  # Tune batch size for efficiency
+  batch_size:
+    type: "categorical"
+    choices: [512, 1024, 2048]
+    default: 1024
+
+# All these parameters stay fixed across trials
+fixed_params:
+  # Model architecture - keep fixed
+  n_dims: 500               # Fixed embedding dimension
+  n_hidden_layers: 3        # Fixed number of layers
+  
+  # Learning rate - keep fixed at known good value
+  learning_rate: 4.366e-5   # Fixed from previous best run
+  
+  # Optimizer - keep fixed
+  optimizer_type: "adam"    # Don't tune optimizer type
+  lr_scheduler: "none"      # No learning rate scheduling
+  
+  # Training settings
+  epochs: 10                # Full training epochs
+  mixed_precision: false    # Keep precision fixed
+  label_smoothing: 0.0      # No label smoothing
+  gradient_clip_val: null   # No gradient clipping
+  
+  # System settings
+  device: "cuda"
+  seed: 42
+  
+  # Evaluation
+  eval_every_n_batches: 10
+  eval_full_every_n_batches: 250
+  checkpoint_every_n_batches: 1000
+
+# Example: You can also use warm-start with fixed params
+best_configs:
+  - name: "baseline"
+    # These will be used as the first trial
+    # Only the hyperparameters section values matter for warm-start
+    hyperparameters:
+      dropout: 0.053          # Starting point for dropout
+      weight_decay: 1e-5      # Starting point for weight decay  
+      batch_size: 1024        # Starting point for batch size
+    priority: 1
+
+# Notes:
+# - Parameters in 'hyperparameters' will be optimized by Optuna
+# - Parameters in 'fixed_params' remain constant for all trials
+# - You can move any parameter between these sections as needed
+# - Default values in 'hyperparameters' are used for the first random trials

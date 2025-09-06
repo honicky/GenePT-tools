@@ -1,0 +1,97 @@
+# Quick Hyperparameter Tuning Configuration
+# Designed for rapid exploration with 10-20 trials
+# Each trial runs for 2 epochs to quickly evaluate hyperparameters
+
+# Optuna Study Configuration
+optuna:
+  study_name: "cellxgene_mlp_quick"
+  direction: "minimize"
+  metric_to_optimize: "val_loss"  # Minimize validation loss
+  n_trials: 10  # Quick exploration
+  n_epochs_per_trial: 2  # Short trials for quick feedback
+  
+  # Sampler configuration
+  sampler:
+    type: "TPESampler"  # Tree-structured Parzen Estimator
+    n_startup_trials: 5  # Random exploration before optimization
+    seed: 42
+  
+  # Pruning configuration - stop bad trials early
+  pruner:
+    type: "MedianPruner"
+    n_startup_trials: 3
+    n_warmup_steps: 100  # Wait before pruning
+    interval_steps: 50  # Check every 50 steps
+
+# Hyperparameter Search Space
+hyperparameters:
+  # Model architecture
+  n_dims:
+    type: "categorical"
+    choices: [200, 500, 1000]  # Embedding dimensions
+    default: 500
+  
+  n_hidden_layers:
+    type: "int"
+    low: 1
+    high: 4
+    default: 3
+  
+  dropout:
+    type: "float"
+    low: 0.0
+    high: 0.3
+    default: 0.053
+  
+  # Training parameters
+  learning_rate:
+    type: "float"
+    low: 1e-5
+    high: 1e-3
+    default: 4.366e-5
+    log: true  # Use log scale for learning rate
+  
+  weight_decay:
+    type: "float"
+    low: 1e-6
+    high: 1e-4
+    default: 1e-5
+    log: true
+  
+  batch_size:
+    type: "categorical"
+    choices: [512, 1024, 2048]
+    default: 1024
+
+# Fixed Parameters (not tuned)
+fixed_params:
+  # Data settings
+  s3_bucket: "pythiomicsdata"
+  s3_prefix: "cellxgene_v2/training_v1_suffled"
+  
+  # Training settings
+  epochs: 10  # Full epochs for final model
+  optimizer_type: "adam"  # Keep Adam for quick search
+  
+  # Evaluation settings
+  eval_every_n_batches: 50  # More frequent for quick trials
+  eval_full_every_n_batches: 500
+  checkpoint_every_n_batches: 1000
+  
+  # System settings
+  device: "auto"  # Auto-detect GPU/CPU
+  seed: 42
+  
+# Warm-start from known good configuration
+best_configs:
+  - name: "baseline_from_notebook"
+    hyperparameters:
+      n_dims: 500
+      n_hidden_layers: 3
+      dropout: 0.053
+      learning_rate: 4.366e-5
+      weight_decay: 1e-5
+      batch_size: 1024
+    metrics:
+      val_loss: 2.125  # Historical performance
+    priority: 1  # Use this first

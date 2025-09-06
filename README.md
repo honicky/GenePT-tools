@@ -51,16 +51,19 @@ uv run pytest
 
 ### Training the CellXGene MLP Model
 
-The `scripts/train_cellxgene_mlp.py` script trains an MLP classifier on CellXGene embeddings for cell type classification.
+The `scripts/train_cellxgene_mlp.py` script trains an MLP classifier on CellXGene embeddings for cell type classification. It supports both standard training and hyperparameter optimization using Optuna.
 
-#### Basic Usage
+#### Basic Training
+
 ```bash
 # Train with local data
 python scripts/train_cellxgene_mlp.py \
   --local-data-dir data/cellxgene_embeddings/training_v1_shuffled \
   --test-data-dir data/cellxgene_embeddings/test_v1 \
   --cell-types-file cell_types_filtered.csv \
-  --epochs 2 \
+  --epochs 10 \
+  --batch-size 1024 \
+  --learning-rate 4.366e-5 \
   --device cuda \
   --wandb-project cellxgene-mlp
 
@@ -80,17 +83,105 @@ python scripts/train_cellxgene_mlp.py \
   --test-data-dir data/cellxgene_embeddings/test_v1
 ```
 
+#### Hyperparameter Tuning with Optuna
+
+The training script supports automatic hyperparameter optimization using Optuna. Simply provide a YAML configuration file with `--tuning-config`:
+
+```bash
+# Quick tuning with example config (10 trials)
+python scripts/train_cellxgene_mlp.py \
+  --tuning-config specs/examples/tuning_quick.yaml \
+  --local-data-dir data/cellxgene_embeddings/training_v1_shuffled \
+  --test-data-dir data/cellxgene_embeddings/test_v1 \
+  --wandb-project cellxgene-tuning
+
+# Full hyperparameter search (100 trials)
+python scripts/train_cellxgene_mlp.py \
+  --tuning-config specs/examples/tuning_full.yaml \
+  --tuning-n-trials 100 \
+  --local-data-dir data/cellxgene_embeddings/training_v1_shuffled \
+  --test-data-dir data/cellxgene_embeddings/test_v1
+
+# Resume previous tuning study
+python scripts/train_cellxgene_mlp.py \
+  --tuning-config specs/examples/tuning_full.yaml \
+  --tuning-storage sqlite:///optuna_study.db \
+  --tuning-n-trials 50  # Run 50 more trials
+```
+
+##### Example Tuning Configurations
+
+**Quick Search** (`specs/examples/tuning_quick.yaml`):
+- 10-20 trials for rapid exploration
+- Tests key hyperparameters: learning rate, dropout, hidden layers
+- 2 epochs per trial for quick evaluation
+- Good for initial exploration
+
+**Full Search** (`specs/examples/tuning_full.yaml`):
+- Comprehensive hyperparameter space
+- Includes optimizer choice, learning rate scheduling
+- Warm-starts from best known configurations
+- Suitable for production model optimization
+
+**Custom Tuning**:
+Create your own YAML config following this structure:
+```yaml
+optuna:
+  study_name: "my_study"
+  direction: "minimize"
+  metric_to_optimize: "val_loss"
+  n_trials: 30
+  n_epochs_per_trial: 2
+
+hyperparameters:
+  # Parameters to optimize
+  dropout:
+    type: "float"
+    low: 0.0
+    high: 0.5
+  
+  batch_size:
+    type: "categorical"
+    choices: [512, 1024, 2048]
+
+fixed_params:
+  # Parameters with fixed values (not optimized)
+  learning_rate: 1e-4  # Fixed learning rate
+  n_hidden_layers: 3    # Fixed architecture
+  epochs: 10            # For final training
+  device: "cuda"
+```
+
+**Important Notes**: 
+- Any parameter you want to keep fixed should go in `fixed_params`, not `hyperparameters`
+- Parameters in `hyperparameters` will be optimized, while those in `fixed_params` remain constant across all trials
+- **Command-line arguments override config values**: If you specify a parameter both in the config file and on the command line, the command-line value takes precedence for certain parameters (data paths, checkpoints, wandb settings)
+
 #### Key Parameters
+
+**Training Parameters:**
 - `--local-data-dir`: Directory with pre-shuffled training parquet files
 - `--test-data-dir`: Directory with validation data
-- `--cell-types-file`: CSV file mapping cell type names to codes (optional)
+- `--cell-types-file`: CSV file mapping cell type names to codes
 - `--epochs`: Number of training epochs (default: 10)
 - `--batch-size`: Batch size for training (default: 1024)
-- `--learning-rate`: Learning rate for AdamW optimizer (default: 4.366e-05)
-- `--checkpoint-dir`: Where to save model checkpoints (default: checkpoints/)
-- `--wandb-project`: Weights & Biases project for experiment tracking
+- `--learning-rate`: Learning rate (default: 4.366e-05)
+- `--n-hidden-layers`: Number of hidden layers (default: 3)
+- `--dropout`: Dropout rate (default: 0.053)
+- `--checkpoint-dir`: Where to save model checkpoints
 
-For full parameter documentation, run:
+**Hyperparameter Tuning:**
+- `--tuning-config`: Path to YAML configuration file (enables tuning mode)
+- `--tuning-n-trials`: Override number of trials from config
+- `--tuning-timeout`: Maximum time in seconds for tuning
+- `--tuning-storage`: Database URL for study persistence (e.g., `sqlite:///study.db`)
+
+**Monitoring:**
+- `--wandb-project`: Weights & Biases project for experiment tracking
+- `--wandb-entity`: W&B team/organization
+- `--enable-hierarchical-metrics`: Use Cell Ontology for hierarchical evaluation
+
+For full parameter documentation:
 ```bash
 python scripts/train_cellxgene_mlp.py --help
 ```
