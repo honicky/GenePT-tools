@@ -1,0 +1,154 @@
+# Full Hyperparameter Tuning Configuration
+# Comprehensive search for production model optimization
+# Includes advanced features like optimizer choice and learning rate scheduling
+
+# Optuna Study Configuration
+optuna:
+  study_name: "cellxgene-dimension-tuning-2"
+  direction: "maximize"  # F1 scores should be maximized!
+  metric_to_optimize: "hierarchical_f1"
+  n_trials: 50  # Target 50 SUCCESSFUL trials (failed trials don't count)
+  n_epochs_per_trial: 2  # Train for 2 epochs per trial
+  ensure_successful_trials: true  # Default: true - Only count successful trials toward n_trials target
+  
+  # Advanced sampler with more startup trials
+  sampler:
+    type: "TPESampler"
+    n_startup_trials: 20  # Reduced for testing (was 20)
+    seed: 42
+  
+  # Aggressive pruning to save compute
+  pruner:
+    type: "MedianPruner"
+    n_startup_trials: 10
+    n_warmup_steps: 500
+    interval_steps: 100
+
+# Comprehensive Hyperparameter Search Space
+hyperparameters:
+  # Model architecture
+  n_dims:
+    type: "categorical"
+    choices: [500, 1000, 1500, 2000, 2500, 3072]  # Fixed to use 3072 not 3078
+    default: 3072
+  
+  n_hidden_layers:
+    type: "int"
+    low: 1
+    high: 5
+    default: 3
+  
+  dropout:
+    type: "float"
+    low: 0.0
+    high: 0.5
+    default: 0.053
+  
+  # # Optimizer configuration
+  # optimizer_type:
+  #   type: "categorical"
+  #   choices: ["adam", "adamw", "sgd"]
+  #   default: "adam"
+  
+  learning_rate:
+    type: "float"
+    low: 1e-4  # This is base LR for batch_size=1024
+    high: 5e-3  # Will be scaled based on batch size
+    default: 0.001  # Updated default based on our successful tests
+    log: true
+    # Note: LR will be automatically scaled by batch_size/1024 in the code
+  
+  weight_decay:
+    type: "float"
+    low: 0
+    high: 1e-3
+    default: 1e-5
+    log: false  # Include 0 for no weight decay
+  
+  
+# Fixed Parameters
+fixed_params:
+  # Data settings
+  s3_bucket: "pythiomicsdata"
+  s3_prefix: "cellxgene_v2/training_v1_suffled"
+  local_data_dir: "data/cellxgene_embeddings/training_v1_shuffled_pt"  # Use PT files for faster loading
+  test_data_dir: "data/cellxgene_embeddings/test_v1_pt"  # Use PT files for validation too
+  
+  # # Training settings - LIMITED FOR TESTING
+  # epochs: 1  # Reduced from 2 for testing
+  # max_steps_per_epoch: 20  # Limit to 20 steps per epoch for quick testing
+  
+  # Experiment tracking
+  wandb_project: "cellxgene-dimension-tuning-2"
+  
+  # Evaluation settings
+  eval_every_n_batches: 25
+  eval_full_every_n_batches: 250
+  checkpoint_every_n_batches: 1000
+  
+  # System settings
+  device: "auto"
+  num_workers: 4  # Use 4 parallel workers for data loading (adjust based on CPU cores)
+  seed: 42
+
+  # IMPORTANT: You must provide --cell-types-file cell_types_filtered.csv
+  # when running tuning to ensure proper label encoding!
+  
+  # Features
+  enable_hierarchical_metrics: true
+  shuffle_files_per_epoch: true
+  shuffle_within_files: true
+
+  batch_size: 4096
+  optimizer_type: "adamw"
+
+  # Note: best_model_metric and best_model_mode are automatically derived from 
+  # metric_to_optimize and direction above by default - no need to specify them!
+
+# Warm-start configurations from best known results
+# best_configs:
+#   - name: "best_3072_dims"
+#     hyperparameters:
+#       n_dims: 3072  # Full dimensions work best
+#       n_hidden_layers: 3
+#       dropout: 0.053
+#       optimizer_type: "adam"
+#       learning_rate: 0.001  # Updated based on scaling fix
+#       weight_decay: 0.00001
+#       lr_scheduler: "none"
+#       gradient_clip_val: null
+#     metrics:
+#       val_loss: 3.91
+#       val_recall_at_10: 0.471
+#     priority: 1
+#   - name: "best_500_dims"
+#     hyperparameters:
+#       n_dims: 500
+#       n_hidden_layers: 3
+#       dropout: 0.053
+#       optimizer_type: "adam"
+#       learning_rate: 0.001  # Updated based on scaling fix
+#       weight_decay: 0.00001
+#       lr_scheduler: "none"
+#       gradient_clip_val: null
+#     metrics:
+#       val_loss: 4.35
+#       val_recall_at_10: 0.532
+#     priority: 2
+    
+# Advanced warm-start strategy
+warm_start_strategy:
+  enabled: true
+  mode: "guide"  # Use warm-start to guide search
+  
+# Early stopping for individual trials
+early_stopping:
+  patience: 100  # Stop if no improvement for 100 evaluations
+  min_delta: 0.001
+  monitor: "hierarchical_f1"
+  mode: "max"  # Consistent with optimization direction
+
+# Resource management
+resources:
+  timeout_per_trial: 1800  # 30 minutes max per trial
+  n_jobs: 1  # Single GPU per trial

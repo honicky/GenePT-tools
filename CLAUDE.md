@@ -62,6 +62,18 @@ uv run pytest -v
    - `NCBI_UNIPROT_ASSOCIATED_CELL_TYPE_TISSUE_DRUG_PATHWAY_PROMPT_V1` main prompt
    - Specialized variants for aging, cell types, drugs, pathways
 
+5. **src/training/** - ML training infrastructure
+   - `trainer.py` - Main training loop with WandB integration, validation, checkpointing
+   - `optuna_manager.py` - Hyperparameter tuning with Optuna
+   - `metrics.py` - Evaluation metrics including hierarchical F1 with Cell Ontology
+   - `config.py` - Training configuration dataclass
+
+6. **src/data_loading/** - Efficient data loading
+   - `pt_dataset.py` - Fast PyTorch tensor dataset with cross-file batching
+   - `s3_dataset.py` - S3/Parquet streaming dataset  
+   - Input scaling (÷0.026) for OpenAI embeddings
+   - Proper label encoding (sequential 0-n codes)
+
 ### Workflow Pattern
 
 1. **Data Setup**: Download embeddings from Zenodo, initialize data directories
@@ -75,6 +87,7 @@ uv run pytest -v
 - `save/` - Model saves and processed outputs
 - `notebooks/` - Analysis and experimentation notebooks
 - `img/` - Visualization outputs
+- `specs/` - High level and detailed impementation instructions for features
 
 ## Configuration
 
@@ -94,7 +107,6 @@ uv run pytest -v
   - integration tests should not leave any state in production systems
   
 
-
 ## Important Notes
 
 - The project uses `uv` for modern Python package management
@@ -102,3 +114,10 @@ uv run pytest -v
 - Large files handled through chunked processing to manage memory
 - API rate limiting built into batch processing
 - Sparse matrix operations used for memory efficiency with single-cell data
+- Always use torch.load with weights_only=True unless there is a good reason not to
+- PT (PyTorch tensor) format provides ~10x faster data loading than Parquet
+- Cross-file batching ensures consistent batch sizes and optimal GPU utilization
+- OpenAI embeddings require scaling (÷0.026) for proper neural network training
+- Cell type codes must be sequential (0 to n-1) for proper model output dimensions
+- Hyperparameter tuning automatically retries failed trials to reach target count
+- WandB artifacts are used for checkpoint storage during hyperparameter optimization

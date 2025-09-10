@@ -51,13 +51,18 @@ class TrainingConfig:
   seed: int = 42
   load_validation_data: bool = True  # Set to False for unit tests to speed them up
   
+  # Best model tracking (automatically derived from Optuna config when using hyperparameter tuning)
+  best_model_metric: str = "logloss"  # Default metric for best model tracking (matches common Optuna usage)
+  best_model_mode: str = "min"  # "min" for lower=better, "max" for higher=better
+  
   # File shuffling
   shuffle_files_per_epoch: bool = True
   shuffle_within_files: bool = True
   
   # Subset for debugging
   start_batch_file: int = 0
-  end_batch_file: Optional[int] = None  # None means use all files
+  end_batch_file: Optional[int] = None
+  max_steps_per_epoch: Optional[int] = None  # Limit training steps per epoch for quick testing  # None means use all files
   
   # Paths
   checkpoint_dir: Path = Path("checkpoints")
@@ -68,6 +73,8 @@ class TrainingConfig:
   wandb_entity: Optional[str] = None
   wandb_run_name: Optional[str] = None
   wandb_tags: List[str] = field(default_factory=list)
+  wandb_save_artifacts: bool = True  # Save checkpoints as WandB artifacts
+  local_checkpoints: bool = True  # Save local filesystem checkpoints (disable when using WandB artifacts)
   verbose: bool = True
   
   # Hierarchical metrics

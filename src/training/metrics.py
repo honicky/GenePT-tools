@@ -170,7 +170,7 @@ def evaluate(
   metrics["logloss"] = log_loss(y, all_preds, labels=np.arange(num_classes))
   
   # Classification metrics
-  metrics["macro_f1"] = f1_score(y, y_pred, average='macro', labels=np.arange(num_classes))
+  metrics["macro_f1"] = f1_score(y, y_pred, average='macro', labels=np.arange(num_classes), zero_division=0)
   metrics["macro_precision"] = precision_score(
     y, y_pred, average='macro', labels=np.arange(num_classes), zero_division=0
   )

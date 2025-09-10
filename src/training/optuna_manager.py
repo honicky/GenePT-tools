@@ -113,7 +113,22 @@ class OptunaManager:
       pruner=pruner
     )
     
-    logger.info(f"Created/loaded study '{study.study_name}' with {len(study.trials)} existing trials")
+    # Count trial states
+    completed_trials = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
+    failed_trials = len([t for t in study.trials if t.state == optuna.trial.TrialState.FAIL])
+    pruned_trials = len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED])
+    
+    logger.info(f"Created/loaded study '{study.study_name}'")
+    logger.info(f"  Existing trials: {len(study.trials)} total")
+    logger.info(f"    - Completed: {completed_trials}")
+    logger.info(f"    - Failed: {failed_trials}")
+    logger.info(f"    - Pruned: {pruned_trials}")
+    
+    if failed_trials > 0:
+      logger.warning(f"Found {failed_trials} failed trials. These will not be retried automatically.")
+      logger.info("To retry failed trials, you can:")
+      logger.info("  1. Delete them from the database manually")
+      logger.info("  2. Or increase n_trials to run additional trials")
     
     return study
   
@@ -147,7 +162,8 @@ class OptunaManager:
         trial = optuna.trial.create_trial(
           params=cfg['hyperparameters'],
           distributions=distributions,
-          value=value
+          value=value,
+          state=optuna.trial.TrialState.COMPLETE if value is not None else optuna.trial.TrialState.WAITING
         )
         
         self.study.add_trial(trial)
@@ -192,21 +208,27 @@ class OptunaManager:
           choices=spec['choices']
         )
       elif param_type == 'float':
+        # Convert to float in case YAML parsed as string (e.g., scientific notation)
+        low_val = float(spec['low'])
+        high_val = float(spec['high'])
         if spec.get('log', False):
           distributions[param_name] = optuna.distributions.FloatDistribution(
-            low=spec['low'],
-            high=spec['high'],
+            low=low_val,
+            high=high_val,
             log=True
           )
         else:
           distributions[param_name] = optuna.distributions.FloatDistribution(
-            low=spec['low'],
-            high=spec['high']
+            low=low_val,
+            high=high_val
           )
       elif param_type == 'int':
+        # Convert to int in case YAML parsed as string
+        low_val = int(spec['low'])
+        high_val = int(spec['high'])
         distributions[param_name] = optuna.distributions.IntDistribution(
-          low=spec['low'],
-          high=spec['high']
+          low=low_val,
+          high=high_val
         )
     
     return distributions
@@ -294,17 +316,23 @@ class OptunaManager:
       if param_type == 'categorical':
         params[param_name] = trial.suggest_categorical(param_name, spec['choices'])
       elif param_type == 'float':
+        # Convert to float in case YAML parsed as string (e.g., scientific notation)
+        low_val = float(spec['low'])
+        high_val = float(spec['high'])
         params[param_name] = trial.suggest_float(
           param_name,
-          spec['low'],
-          spec['high'],
+          low_val,
+          high_val,
           log=spec.get('log', False)
         )
       elif param_type == 'int':
+        # Convert to int in case YAML parsed as string
+        low_val = int(spec['low'])
+        high_val = int(spec['high'])
         params[param_name] = trial.suggest_int(
           param_name,
-          spec['low'],
-          spec['high']
+          low_val,
+          high_val
         )
     
     # Merge with fixed parameters
@@ -342,15 +370,19 @@ class OptunaManager:
     # Map parameters to TrainingConfig fields
     config_kwargs = {}
     
-    # Direct mappings
+    # Direct mappings (best_model_metric and best_model_mode are automatically derived from Optuna config)
     direct_mappings = [
       'n_dims', 'n_hidden_layers', 'dropout', 'learning_rate', 
-      'weight_decay', 'batch_size', 'mixed_precision',
+      'weight_decay', 'optimizer_type', 'lr_scheduler', 'gradient_clip_val',
+      'batch_size', 'mixed_precision',
       's3_bucket', 's3_prefix', 'aws_profile',
       'eval_every_n_batches', 'eval_full_every_n_batches',
       'checkpoint_every_n_batches', 'device', 'num_workers',
       'seed', 'shuffle_files_per_epoch', 'shuffle_within_files',
-      'enable_hierarchical_metrics', 'ontology_cache_dir'
+      'enable_hierarchical_metrics', 'ontology_cache_dir',
+      'start_batch_file', 'end_batch_file', 'max_steps_per_epoch',
+      'wandb_save_artifacts', 'local_checkpoints',
+      'wandb_project', 'wandb_entity', 'wandb_run_name'
     ]
     
     for key in direct_mappings:
@@ -365,6 +397,27 @@ class OptunaManager:
     
     # Set epochs for quick evaluation during tuning
     config_kwargs['epochs'] = self.config['optuna'].get('n_epochs_per_trial', 2)
+    
+    # Automatically set best model tracking to match Optuna optimization metric
+    # This ensures consistency between hyperparameter optimization and model saving
+    optuna_metric = self.config['optuna'].get('metric_to_optimize', 'logloss')
+    optuna_direction = self.config['optuna'].get('direction', 'minimize')
+    
+    # Warn if manually specified metrics conflict with Optuna settings
+    if 'best_model_metric' in params and params['best_model_metric'] != optuna_metric:
+      logger.warning(
+        f"Overriding manually specified best_model_metric '{params['best_model_metric']}' "
+        f"with Optuna optimization metric '{optuna_metric}' for consistency"
+      )
+    
+    config_kwargs['best_model_metric'] = optuna_metric
+    config_kwargs['best_model_mode'] = 'max' if optuna_direction == 'maximize' else 'min'
+    
+    # Automatically disable local checkpoints if WandB artifacts are enabled
+    # This prevents filesystem collisions during hyperparameter optimization
+    if config_kwargs.get('wandb_save_artifacts', True) and 'wandb_project' in params:
+      config_kwargs['local_checkpoints'] = False
+      logger.info("Disabled local checkpoints since WandB artifacts are enabled for hyperparameter optimization")
     
     return TrainingConfig(**config_kwargs)
   
@@ -382,7 +435,56 @@ class OptunaManager:
       timeout: Maximum time in seconds (overrides config)
     """
     n_trials = n_trials or self.config['optuna'].get('n_trials', 100)
-    timeout = timeout or self.config.get('resources', {}).get('timeout_per_trial')
+    # Note: timeout parameter to optimize() is TOTAL timeout, not per-trial
+    # If we have timeout_per_trial in config, we should either:
+    # 1. Not use it (set timeout=None)
+    # 2. Or multiply by n_trials for total timeout
+    # For now, we'll use the timeout parameter as total timeout if explicitly provided
+    timeout = timeout  # Use command-line provided timeout as total timeout
+    if timeout is None:
+      # Don't use timeout_per_trial as total timeout - that's a bug!
+      # Could do: timeout = self.config.get('resources', {}).get('timeout_per_trial') * n_trials
+      # But for now, just don't set a total timeout
+      timeout = None
+    
+    # Check how many successful trials we already have
+    completed_count = len([t for t in self.study.trials if t.state == optuna.trial.TrialState.COMPLETE])
+    failed_count = len([t for t in self.study.trials if t.state == optuna.trial.TrialState.FAIL])
+    
+    # By default, ensure we get n_trials SUCCESSFUL trials (not counting failed ones)
+    # This means if we want 50 successful trials and already have 2 complete + 1 failed,
+    # we'll run up to 48 more trials to get to 50 successful (the failed one doesn't count)
+    
+    # Get the target number of successful trials
+    target_successful_trials = n_trials
+    
+    # Check if we should ensure successful trials (default: True)
+    ensure_successful = self.config['optuna'].get('ensure_successful_trials', True)
+    
+    if ensure_successful and completed_count > 0:
+      # Calculate how many more trials we need to reach the target
+      remaining_trials_needed = max(0, target_successful_trials - completed_count)
+      
+      if remaining_trials_needed == 0:
+        logger.info(f"Already have {completed_count} successful trials, reached target of {target_successful_trials}")
+        return
+      
+      # Optuna's n_trials counts ALL trials, so we need to account for existing trials
+      # We'll request enough trials to likely get the remaining successful ones
+      # Add a buffer for potential failures (10% extra or at least 1)
+      buffer = max(1, int(remaining_trials_needed * 0.1))
+      n_trials_to_run = remaining_trials_needed + buffer
+      
+      logger.info(f"Target: {target_successful_trials} successful trials")
+      logger.info(f"Already have: {completed_count} successful, {failed_count} failed")
+      logger.info(f"Will run up to {n_trials_to_run} more trials to reach target")
+      
+      n_trials = n_trials_to_run
+    else:
+      logger.info(f"Starting optimization: requesting {n_trials} trials")
+      if completed_count > 0 or failed_count > 0:
+        logger.info(f"Already have {completed_count} completed, {failed_count} failed")
+    logger.info(f"Total timeout: {timeout}s" if timeout else "No timeout")
     
     # Create objective function
     def objective(trial: Trial) -> float:

@@ -115,6 +115,7 @@ python scripts/train_cellxgene_mlp.py \
 - 10-20 trials for rapid exploration
 - Tests key hyperparameters: learning rate, dropout, hidden layers
 - 2 epochs per trial for quick evaluation
+- Automatically retries failed trials to reach target count
 - Good for initial exploration
 
 **Full Search** (`specs/examples/tuning_full.yaml`):

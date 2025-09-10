@@ -1,6 +1,8 @@
 """Trainer class for CellXGene MLP model."""
 
+import random
 import time
+import warnings
 from pathlib import Path
 from typing import Dict, Tuple
 import numpy as np
@@ -13,7 +15,8 @@ from tqdm import tqdm
 
 from ..models.mlp_classifier import MLPClassifier
 from ..data_loading.s3_dataset import S3ParquetStreamDataset
-from ..utils.checkpoint import CheckpointManager, load_checkpoint, save_best_model
+from ..data_loading.pt_dataset import PTFileStreamDataset
+from ..utils.checkpoint import CheckpointManager, load_checkpoint, save_best_model, save_checkpoint
 from .metrics import evaluate, evaluate_with_hierarchy
 from .config import TrainingConfig
 from .ontology import CellOntologyManager
@@ -53,6 +56,18 @@ class MLPTrainer:
     self.cell_type_codes = cell_type_codes
     self.trial = trial
     
+    # Set random seeds for reproducibility
+    if config.seed is not None:
+      random.seed(config.seed)
+      np.random.seed(config.seed)
+      torch.manual_seed(config.seed)
+      if torch.cuda.is_available():
+        torch.cuda.manual_seed(config.seed)
+        torch.cuda.manual_seed_all(config.seed)
+      # For additional reproducibility (may impact performance)
+      torch.backends.cudnn.deterministic = True
+      torch.backends.cudnn.benchmark = False
+    
     # Set device
     self.device = torch.device(config.device)
     print(f"Using device: {self.device}")
@@ -80,6 +95,11 @@ class MLPTrainer:
     self.start_epoch = 0
     self.start_batch = 0
     self.global_step = 0
+    
+    # Track validation thresholds - initialize to the first interval
+    # (not 0, which would trigger immediately on step 1)
+    self.next_eval_5k_step = config.eval_every_n_batches
+    self.next_eval_full_step = config.eval_full_every_n_batches
     
     # Load checkpoint if resuming
     if config.resume_from is not None:
@@ -146,51 +166,90 @@ class MLPTrainer:
       {"params": no_decay_params, "weight_decay": 0.0},
     ]
     
-    optimizer = optim.AdamW(param_groups, lr=self.config.learning_rate)
+    # Create optimizer based on config
+    if self.config.optimizer_type == "adam":
+      optimizer = optim.Adam(param_groups, lr=self.config.learning_rate)
+    elif self.config.optimizer_type == "adamw":
+      optimizer = optim.AdamW(param_groups, lr=self.config.learning_rate)
+    elif self.config.optimizer_type == "sgd":
+      optimizer = optim.SGD(param_groups, lr=self.config.learning_rate, momentum=0.9)
+    else:
+      raise ValueError(f"Unknown optimizer type: {self.config.optimizer_type}")
+    
     return optimizer
   
   def load_validation_data(self):
-    """Load validation datasets."""
+    """Load validation datasets from directory, supporting both .parquet and .pt formats."""
     print("Loading validation data...")
     
-    # Try to load from test data directory if specified
-    if self.config.test_data_dir is not None:
-      test_dir = Path(self.config.test_data_dir)
-      
-      # Load 5k validation set
-      val_5k_path = test_dir / "val_5k.parquet"
-      if val_5k_path.exists():
-        df = pd.read_parquet(val_5k_path)
-        self.X_val_5k, self.y_val_5k = self._process_validation_df(df)
-        print(f"Loaded 5k validation set: {self.X_val_5k.shape}")
-      
-      # Load 120k validation set
-      val_120k_path = test_dir / "val_120k.parquet"
-      if val_120k_path.exists():
-        df = pd.read_parquet(val_120k_path)
-        self.X_val_120k, self.y_val_120k = self._process_validation_df(df)
-        print(f"Loaded 120k validation set: {self.X_val_120k.shape}")
+    if self.config.test_data_dir is None:
+      print("No test_data_dir specified, skipping validation data loading")
+      return
     
-    # Fall back to loading from data directory
-    if self.X_val_120k is None:
-      test_path = self.config.data_dir / "cellxgene_embeddings" / "test_v1"
-      if test_path.exists():
-        # Load all parquet files in test directory
-        dfs = []
-        for file in test_path.glob("*.parquet"):
-          dfs.append(pd.read_parquet(file))
-        
-        if dfs:
-          df = pd.concat(dfs, ignore_index=True)
-          self.X_val_120k, self.y_val_120k = self._process_validation_df(df)
-          print(f"Loaded validation set from {test_path}: {self.X_val_120k.shape}")
-          
-          # Create 5k subset
-          if len(self.X_val_120k) > 5000:
-            indices = np.random.choice(len(self.X_val_120k), 5000, replace=False)
-            self.X_val_5k = self.X_val_120k[indices]
-            self.y_val_5k = self.y_val_120k[indices]
-            print(f"Created 5k validation subset")
+    test_dir = Path(self.config.test_data_dir)
+    if not test_dir.exists():
+      print(f"Test directory {test_dir} does not exist")
+      return
+    
+    # Check for .pt files first (faster format)
+    pt_files = sorted(test_dir.glob("*.pt"))
+    # Filter out metadata file
+    pt_files = [f for f in pt_files if f.name != "metadata.pt"]
+    
+    if pt_files:
+      print(f"Loading validation data from {len(pt_files)} .pt files")
+      X_list = []
+      y_list = []
+      
+      for pt_file in pt_files:
+        data = torch.load(pt_file, weights_only=True)
+        # Slice to configured dimensions if needed
+        X = data['X']
+        if self.config.n_dims is not None and X.shape[1] > self.config.n_dims:
+          X = X[:, :self.config.n_dims]
+        # Scale embeddings to match training data scaling
+        X = X / 0.026  # Same scaling as training data
+        X_list.append(X.numpy())
+        y_list.append(data['y'].numpy())
+      
+      # Combine all files
+      X_combined = np.concatenate(X_list, axis=0).astype(np.float32)
+      y_combined = np.concatenate(y_list, axis=0).astype(np.int64)
+      
+      # Filter to valid cell types (y values should already be in range 0 to num_classes-1)
+      valid_mask = (y_combined >= 0) & (y_combined < self.num_classes)
+      self.X_val_120k = X_combined[valid_mask]
+      self.y_val_120k = y_combined[valid_mask]
+      
+    else:
+      # Fall back to loading parquet files
+      parquet_files = sorted(test_dir.glob("*.parquet"))
+      
+      if not parquet_files:
+        print(f"No .pt or .parquet files found in {test_dir}")
+        return
+      
+      print(f"Loading validation data from {len(parquet_files)} .parquet files")
+      dfs = []
+      for parquet_file in parquet_files:
+        dfs.append(pd.read_parquet(parquet_file))
+      
+      if dfs:
+        df = pd.concat(dfs, ignore_index=True)
+        self.X_val_120k, self.y_val_120k = self._process_validation_df(df)
+    
+    if self.X_val_120k is not None:
+      print(f"Loaded validation set: {self.X_val_120k.shape}")
+      
+      # Create 5k subset
+      if len(self.X_val_120k) > 5000:
+        indices = np.random.choice(len(self.X_val_120k), 5000, replace=False)
+        self.X_val_5k = self.X_val_120k[indices]
+        self.y_val_5k = self.y_val_120k[indices]
+        print(f"Created 5k validation subset")
+      else:
+        self.X_val_5k = self.X_val_120k
+        self.y_val_5k = self.y_val_120k
   
   def _process_validation_df(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     """Process validation dataframe to extract features and labels."""
@@ -203,6 +262,9 @@ class MLPTrainer:
       print(f"Warning: Only {len(available_cols)} embedding dimensions available")
     
     X = df[available_cols].values.astype(np.float32)
+    
+    # Scale embeddings to match training data scaling
+    X = X / 0.026  # Same scaling as training data
     
     # Get the subset of cell types we're training on
     # cell_types is the list of cell type names we're training on
@@ -266,10 +328,21 @@ class MLPTrainer:
     epoch_losses = []
     batch_times = []
     
-    # Progress bar
+    # Progress bar with validation metrics tracking
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
+    val_postfix = {}  # Store latest validation metrics for display
+    
+    # Get expected number of batches (this is an estimate)
+    expected_batches = len(dataloader) if hasattr(dataloader, '__len__') else None
     
     for batch_idx, (X, y) in enumerate(pbar):
+      # Check if we're near the end of the epoch (last 10% of batches)
+      # and suppress the IterableDataset length warning for those
+      if expected_batches and batch_idx > expected_batches * 0.9:
+        warnings.filterwarnings('ignore', message='.*Length of IterableDataset.*was reported to be.*')
+      else:
+        # Re-enable the warning for normal batches
+        warnings.filterwarnings('default', message='.*Length of IterableDataset.*was reported to be.*')
       batch_start = time.time()
       
       # Train on batch
@@ -279,56 +352,113 @@ class MLPTrainer:
       batch_time = time.time() - batch_start
       batch_times.append(batch_time)
       
-      # Update progress bar
-      pbar.set_postfix({'loss': f'{loss:.4f}'})
+      # Update progress bar with loss and any validation metrics
+      postfix_dict = {'loss': f'{loss:.4f}'}
+      postfix_dict.update(val_postfix)
+      pbar.set_postfix(postfix_dict)
       
-      # Log to W&B
+      # Report to Optuna trial if present (before incrementing step)
+      if self.trial is not None:
+        self.trial.report(loss, self.global_step)
+      
+      # Increment step counter before any logging (to ensure correct WandB step ordering)
+      self.global_step += 1
+      
+      # Log to W&B with the incremented step (don't commit yet)
       if self.wandb_run is not None:
         self.wandb_run.log({
           'train/loss': loss,
           'train/batch_time': batch_time,
           'epoch': epoch,
           'global_step': self.global_step
-        })
+        }, step=self.global_step, commit=False)
       
-      # Report to Optuna trial if present
-      if self.trial is not None:
-        self.trial.report(loss, self.global_step)
-      
-      # Periodic evaluation on 5k validation set
-      if self.global_step % self.config.eval_every_n_batches == 0 and self.X_val_5k is not None:
+      # Periodic evaluation on 5k validation set (threshold-based)
+      if self.global_step >= self.next_eval_5k_step and self.X_val_5k is not None:
         val_metrics = self.evaluate_validation(use_5k=True)
-        if self.config.verbose and val_metrics and 'logloss' in val_metrics:
-          metrics_str = (f"loss={val_metrics['logloss']:.4f}, "
-                        f"recall@10={val_metrics['recall_at_10']:.4f}")
+        if val_metrics and 'logloss' in val_metrics:
+          # Update progress bar postfix with validation metrics
+          val_postfix['val_loss'] = f"{val_metrics['logloss']:.3f}"
+          val_postfix['val_r@10'] = f"{val_metrics['recall_at_10']:.3f}"
           if 'hierarchical_f1' in val_metrics:
-            metrics_str += f", h-F1={val_metrics['hierarchical_f1']:.4f}"
-          print(f"\n[Step {self.global_step}] Val-5k metrics: {metrics_str}")
+            val_postfix['val_hF1'] = f"{val_metrics['hierarchical_f1']:.3f}"
+        # Set next threshold
+        self.next_eval_5k_step = self.global_step + self.config.eval_every_n_batches
       
-      # Less frequent evaluation on full validation set
-      if self.global_step % self.config.eval_full_every_n_batches == 0 and self.X_val_120k is not None:
+      # Less frequent evaluation on full validation set (threshold-based)
+      if self.global_step >= self.next_eval_full_step and self.X_val_120k is not None:
+        # Debug: Check if we're at the exact threshold
+        if self.global_step == self.next_eval_full_step and self.config.verbose:
+          print(f"[DEBUG] Running full validation at step {self.global_step} (threshold was {self.next_eval_full_step})")
         val_metrics = self.evaluate_validation(use_5k=False)
-        if self.config.verbose and val_metrics and 'logloss' in val_metrics:
-          metrics_str = (f"loss={val_metrics['logloss']:.4f}, "
-                        f"recall@10={val_metrics['recall_at_10']:.4f}, "
-                        f"MRR@10={val_metrics['mrr_at_10']:.4f}")
+        if val_metrics and 'logloss' in val_metrics:
+          # Update with full validation metrics (overwrite the 5k metrics)
+          val_postfix['val_loss'] = f"{val_metrics['logloss']:.3f}"
+          val_postfix['val_r@10'] = f"{val_metrics['recall_at_10']:.3f}"
+          val_postfix['val_mrr'] = f"{val_metrics['mrr_at_10']:.3f}"
           if 'hierarchical_f1' in val_metrics:
-            metrics_str += f", h-F1={val_metrics['hierarchical_f1']:.4f}"
-          print(f"\n[Step {self.global_step}] Val-120k metrics: {metrics_str}")
+            val_postfix['val_hF1'] = f"{val_metrics['hierarchical_f1']:.3f}"
+          # Add a marker to show this is full validation
+          val_postfix['full'] = "✓"
+        # Set next threshold
+        self.next_eval_full_step = self.global_step + self.config.eval_full_every_n_batches
       
-      # Increment step counter first
-      self.global_step += 1
+      # Always commit at the end of each step (after training and any validations)
+      if self.wandb_run is not None:
+        # Commit with an empty log to finalize this step
+        self.wandb_run.log({}, step=self.global_step, commit=True)
+      
+      # Check if we've reached max steps per epoch (for quick testing)
+      if (self.config.max_steps_per_epoch is not None and 
+          batch_idx + 1 >= self.config.max_steps_per_epoch):
+        # Early stop message will be visible in the progress bar description
+        pbar.set_description(f"Epoch {epoch} (stopped at {self.config.max_steps_per_epoch} steps)")
+        break
       
       # Checkpoint after incrementing (so we don't checkpoint at step 0)
       if self.checkpoint_manager.should_save(self.global_step):
-        self.checkpoint_manager.save(
-          model=self.model,
-          optimizer=self.optimizer,
-          epoch=epoch,
-          batch_idx=batch_idx,
-          global_step=self.global_step,
-          config=self.config
-        )
+        checkpoint_path = None
+        
+        # Save local checkpoint (only if enabled)
+        if self.config.local_checkpoints:
+          checkpoint_path = self.checkpoint_manager.save(
+            model=self.model,
+            optimizer=self.optimizer,
+            epoch=epoch,
+            batch_idx=batch_idx,
+            global_step=self.global_step,
+            config=self.config
+          )
+        
+        # Save checkpoint as WandB artifact (regardless of local checkpoint setting)
+        if self.config.wandb_save_artifacts and self.wandb_run:
+          # If no local checkpoint was saved, create a temporary one for WandB
+          if checkpoint_path is None:
+            checkpoint_path = self.config.checkpoint_dir / f"temp_checkpoint_step_{self.global_step}.pt"
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            save_checkpoint(
+              checkpoint_path=checkpoint_path,
+              model=self.model,
+              optimizer=self.optimizer,
+              epoch=epoch,
+              batch_idx=batch_idx,
+              global_step=self.global_step,
+              config=self.config
+            )
+          
+          self.save_artifact(
+            file_path=checkpoint_path,
+            artifact_name=f"checkpoint_step_{self.global_step}",
+            artifact_type="checkpoint",
+            description=f"Training checkpoint at step {self.global_step} (epoch {epoch}, batch {batch_idx})"
+          )
+          
+          # Clean up temporary checkpoint if it was created just for WandB
+          if not self.config.local_checkpoints and checkpoint_path.name.startswith("temp_"):
+            checkpoint_path.unlink(missing_ok=True)
+    
+    # Reset warning filter to default for next epoch
+    warnings.filterwarnings('default', message='.*Length of IterableDataset.*was reported to be.*')
     
     # Return epoch metrics
     return {
@@ -386,18 +516,86 @@ class MLPTrainer:
     
     # Log to W&B
     if self.wandb_run is not None:
-      self.wandb_run.log(prefixed_metrics)
+      # Store the step we're logging to (in case global_step changes)
+      log_step = self.global_step
+      # Don't commit here - let the training loop handle commits
+      self.wandb_run.log(prefixed_metrics, step=log_step, commit=False)
     
-    # Update best metric for checkpointing
-    if prefix == "val120k" and 'logloss' in metrics:
-      self.checkpoint_manager.best_metric = save_best_model(
-        model=self.model,
-        metrics={'val_logloss': metrics['logloss']},
-        metric_name='val_logloss',
-        checkpoint_dir=self.config.checkpoint_dir,
-        mode='min',
-        current_best=self.checkpoint_manager.best_metric
-      )
+    # Update best metric for checkpointing (unless explicitly disabled with "none")
+    if (prefix == "val120k" and 
+        self.config.best_model_metric != "none" and 
+        self.config.best_model_metric in metrics):
+      metric_key = f"val_{self.config.best_model_metric}"
+      
+      # Save locally only if local checkpoints are enabled
+      new_best_value = None
+      if self.config.local_checkpoints:
+        new_best_value = save_best_model(
+          model=self.model,
+          metrics={metric_key: metrics[self.config.best_model_metric]},
+          metric_name=metric_key,
+          checkpoint_dir=self.config.checkpoint_dir,
+          mode=self.config.best_model_mode,
+          current_best=self.checkpoint_manager.best_metric
+        )
+      else:
+        # Just check if this would be a new best without saving locally
+        current_value = metrics[self.config.best_model_metric]
+        current_best = self.checkpoint_manager.best_metric
+        
+        is_best = False
+        if current_best is None:
+          is_best = True
+        elif self.config.best_model_mode == 'min' and current_value < current_best:
+          is_best = True
+        elif self.config.best_model_mode == 'max' and current_value > current_best:
+          is_best = True
+          
+        new_best_value = current_value if is_best else current_best
+      
+      # Save as WandB artifact if a new best model was identified (regardless of local saving)
+      if (new_best_value is not None and new_best_value != self.checkpoint_manager.best_metric and
+          self.config.wandb_save_artifacts and self.wandb_run):
+        current_metric_value = metrics[self.config.best_model_metric]
+        
+        # If local checkpoints are disabled, we need to create temporary files for WandB
+        if not self.config.local_checkpoints:
+          best_model_path = self.config.checkpoint_dir / 'temp_best_model.pt'
+          best_model_path.parent.mkdir(parents=True, exist_ok=True)
+          torch.save(self.model.state_dict(), best_model_path)
+          
+          metrics_path = self.config.checkpoint_dir / 'temp_best_model_metrics.json'
+          with open(metrics_path, 'w') as f:
+            import json
+            json.dump({metric_key: current_metric_value}, f, indent=2)
+        else:
+          # Use the locally saved files
+          best_model_path = self.config.checkpoint_dir / 'best_model.pt'
+          metrics_path = self.config.checkpoint_dir / 'best_model_metrics.json'
+        
+        # Save model artifact
+        self.save_artifact(
+          file_path=best_model_path,
+          artifact_name="best_model",
+          artifact_type="model",
+          description=f"Best model with {metric_key}={current_metric_value:.4f}"
+        )
+        
+        # Save metrics artifact
+        if metrics_path.exists():
+          self.save_artifact(
+            file_path=metrics_path,
+            artifact_name="best_model_metrics",
+            artifact_type="metrics",
+            description=f"Metrics for best model ({metric_key}={current_metric_value:.4f})"
+          )
+        
+        # Clean up temporary files if they were created just for WandB
+        if not self.config.local_checkpoints:
+          best_model_path.unlink(missing_ok=True)
+          metrics_path.unlink(missing_ok=True)
+      
+      self.checkpoint_manager.best_metric = new_best_value
     
     return metrics
   
@@ -434,10 +632,38 @@ class MLPTrainer:
       reinit=True
     )
     
-    # Watch model
-    wandb.watch(self.model, log='all', log_freq=100)
+    # Watch model (reduced frequency to avoid overwhelming wandb)
+    wandb.watch(self.model, log='gradients', log_freq=200)
     
     print(f"Initialized W&B run: {self.wandb_run.name}")
+  
+  def save_artifact(self, file_path: Path, artifact_name: str, artifact_type: str, description: str = ""):
+    """Save a file as WandB artifact.
+    
+    Args:
+      file_path: Path to file to save as artifact
+      artifact_name: Name for the artifact  
+      artifact_type: Type of artifact (e.g. 'model', 'checkpoint')
+      description: Optional description
+    """
+    if self.wandb_run is None or not self.config.wandb_save_artifacts:
+      return
+    
+    if not file_path.exists():
+      print(f"Warning: File {file_path} does not exist, skipping artifact save")
+      return
+    
+    try:
+      artifact = wandb.Artifact(
+        name=artifact_name,
+        type=artifact_type,
+        description=description
+      )
+      artifact.add_file(str(file_path))
+      self.wandb_run.log_artifact(artifact)
+      print(f"Saved {artifact_type} artifact: {artifact_name}")
+    except Exception as e:
+      print(f"Warning: Failed to save artifact {artifact_name}: {e}")
   
   def run(self) -> Dict[str, float]:
     """Run the full training loop.
@@ -446,58 +672,120 @@ class MLPTrainer:
       Final validation metrics for hyperparameter optimization
     """
     print(f"Starting training for {self.config.epochs} epochs")
+    print(f"[DEBUG] Config batch_size: {self.config.batch_size}")
+    print(f"[DEBUG] Config learning_rate: {self.config.learning_rate}")
     
-    # Create dataset
-    dataset = S3ParquetStreamDataset(
-      cell_types=self.cell_types,
-      cell_type_codes=self.cell_type_codes,
-      s3_bucket=self.config.s3_bucket,
-      s3_prefix=self.config.s3_prefix,
-      local_data_dir=self.config.local_data_dir,
-      n_dims=self.config.n_dims,
-      batch_size=self.config.batch_size,
-      download_if_missing=self.config.download_if_missing,
-      shuffle_files_per_epoch=self.config.shuffle_files_per_epoch,
-      shuffle_within_files=self.config.shuffle_within_files,
-      aws_profile=self.config.aws_profile,
-      start_batch_file=self.config.start_batch_file,
-      end_batch_file=self.config.end_batch_file,
-      seed=self.config.seed,
-      verbose=self.config.verbose
-    )
+    # Create dataset - auto-detect format based on directory contents
+    local_data_path = Path(self.config.local_data_dir)
+    
+    # Check if directory contains .pt files (fast format)
+    pt_files = list(local_data_path.glob("*.pt"))
+    
+    if pt_files and any(f.name.startswith("batch_") for f in pt_files):
+      # Use fast PT dataset
+      if self.config.verbose:
+        print(f"Using fast PT dataset from {local_data_path}")
+      dataset = PTFileStreamDataset(
+        data_dir=local_data_path,
+        batch_size=self.config.batch_size,
+        n_dims=self.config.n_dims,
+        shuffle_files_per_epoch=self.config.shuffle_files_per_epoch,
+        shuffle_within_files=self.config.shuffle_within_files,
+        seed=self.config.seed,
+        verbose=self.config.verbose
+      )
+    else:
+      # Use original S3/Parquet dataset
+      if self.config.verbose:
+        print(f"Using S3/Parquet dataset")
+      dataset = S3ParquetStreamDataset(
+        cell_types=self.cell_types,
+        cell_type_codes=self.cell_type_codes,
+        s3_bucket=self.config.s3_bucket,
+        s3_prefix=self.config.s3_prefix,
+        local_data_dir=self.config.local_data_dir,
+        n_dims=self.config.n_dims,
+        batch_size=self.config.batch_size,
+        download_if_missing=self.config.download_if_missing,
+        shuffle_files_per_epoch=self.config.shuffle_files_per_epoch,
+        shuffle_within_files=self.config.shuffle_within_files,
+        aws_profile=self.config.aws_profile,
+        start_batch_file=self.config.start_batch_file,
+        end_batch_file=self.config.end_batch_file,
+        seed=self.config.seed,
+        verbose=self.config.verbose
+      )
     
     # Create dataloader
     dataloader = DataLoader(
       dataset,
       batch_size=None,  # Dataset returns batches
-      num_workers=self.config.num_workers
+      num_workers=self.config.num_workers,
+      pin_memory=True if self.device.type == 'cuda' else False,
+      prefetch_factor=2 if self.config.num_workers > 0 else None,
+      persistent_workers=True if self.config.num_workers > 0 else False
     )
     
     # Training loop
     for epoch in range(self.start_epoch, self.config.epochs):
-      epoch_metrics = self.train_epoch(dataloader, epoch)
+      self.train_epoch(dataloader, epoch)
       
-      print(f"Epoch {epoch} completed: avg_loss={epoch_metrics['avg_loss']:.4f}")
+      # Epoch completion is already shown in the progress bar
       
-      # Full validation at end of epoch
+      # Full validation at end of epoch (metrics shown in progress bar)
       if self.X_val_120k is not None:
-        val_metrics = self.evaluate_validation(use_5k=False)
-        print(f"Validation metrics: {val_metrics}")
+        self.evaluate_validation(use_5k=False)
+        # Commit the end-of-epoch validation metrics
+        if self.wandb_run is not None:
+          self.wandb_run.log({}, step=self.global_step, commit=True)
     
     # Save final checkpoint
     final_metrics = {}
     if self.X_val_120k is not None:
       final_metrics = self.evaluate_validation(use_5k=False)
     
-    self.checkpoint_manager.save_final(
-      model=self.model,
-      optimizer=self.optimizer,
-      epoch=self.config.epochs,
-      batch_idx=0,
-      global_step=self.global_step,
-      metrics=final_metrics,
-      config=self.config
-    )
+    final_checkpoint_path = None
+    
+    # Save final checkpoint locally (only if enabled)
+    if self.config.local_checkpoints:
+      final_checkpoint_path = self.checkpoint_manager.save_final(
+        model=self.model,
+        optimizer=self.optimizer,
+        epoch=self.config.epochs,
+        batch_idx=0,
+        global_step=self.global_step,
+        metrics=final_metrics,
+        config=self.config
+      )
+    
+    # Save final checkpoint as WandB artifact (regardless of local setting)
+    if self.config.wandb_save_artifacts and self.wandb_run:
+      # If no local checkpoint was saved, create a temporary one for WandB
+      if final_checkpoint_path is None:
+        final_checkpoint_path = self.config.checkpoint_dir / "temp_final_checkpoint.pt"
+        final_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        save_checkpoint(
+          checkpoint_path=final_checkpoint_path,
+          model=self.model,
+          optimizer=self.optimizer,
+          epoch=self.config.epochs,
+          batch_idx=0,
+          global_step=self.global_step,
+          best_metrics={'best_' + self.checkpoint_manager.track_metric: self.checkpoint_manager.best_metric} if self.checkpoint_manager.best_metric else None,
+          final_metrics=final_metrics,
+          config=self.config
+        )
+      
+      self.save_artifact(
+        file_path=final_checkpoint_path,
+        artifact_name="final_checkpoint",
+        artifact_type="checkpoint",
+        description=f"Final training checkpoint after {self.config.epochs} epochs ({self.global_step} steps)"
+      )
+      
+      # Clean up temporary checkpoint if it was created just for WandB
+      if not self.config.local_checkpoints and final_checkpoint_path.name.startswith("temp_"):
+        final_checkpoint_path.unlink(missing_ok=True)
     
     # Close W&B run
     if self.wandb_run is not None:

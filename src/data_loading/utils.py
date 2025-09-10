@@ -131,7 +131,7 @@ def get_or_download_file(
   
   # Check if file exists locally
   if check_local_file(local_path):
-    print(f"Using local file: {local_path}")
+    # print(f"Using local file: {local_path}")
     return local_path
   
   # Download if enabled

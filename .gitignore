@@ -190,3 +190,20 @@ cython_debug/
 models
 notebooks/wandb
 temp/
+
+# Database files
+*.db
+
+# Log and text files (excluding requirements.txt)
+*.log
+*.txt
+!requirements*.txt
+
+# WandB artifacts
+wandb/
+
+# Checkpoint files  
+checkpoints/
+
+# CSV data files (keep cell_types_filtered.csv tracked)
+# *.csv

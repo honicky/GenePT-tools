@@ -196,6 +196,28 @@ def parse_args():
     default=None,
     help="Weights & Biases tags"
   )
+  parser.add_argument(
+    "--wandb-save-artifacts",
+    action="store_true",
+    default=True,
+    help="Save checkpoints as WandB artifacts (default: True)"
+  )
+  parser.add_argument(
+    "--no-wandb-artifacts",
+    action="store_true",
+    help="Disable saving checkpoints as WandB artifacts"
+  )
+  parser.add_argument(
+    "--local-checkpoints",
+    action="store_true",
+    default=True,
+    help="Save checkpoints to local filesystem (default: True, automatically disabled during hyperparameter optimization with WandB)"
+  )
+  parser.add_argument(
+    "--no-local-checkpoints",
+    action="store_true",
+    help="Disable local filesystem checkpoints (useful when using WandB artifacts)"
+  )
   
   # Resume and subset
   parser.add_argument(
@@ -215,6 +237,27 @@ def parse_args():
     type=int,
     default=None,
     help="End at this batch file (for debugging)"
+  )
+  parser.add_argument(
+    "--max-steps-per-epoch",
+    type=int,
+    default=None,
+    help="Maximum training steps per epoch (for quick testing)"
+  )
+  
+  # Best model tracking
+  parser.add_argument(
+    "--best-model-metric",
+    type=str,
+    default="logloss",
+    help="Metric to use for saving best model (default: logloss). Use 'none' to disable best model tracking. Automatically overridden to match Optuna optimization metric when using hyperparameter tuning."
+  )
+  parser.add_argument(
+    "--best-model-mode",
+    type=str,
+    default="min",
+    choices=["min", "max"],
+    help="Whether best metric should be minimized or maximized (default: min for logloss). Automatically overridden to match Optuna direction when using hyperparameter tuning."
   )
   
   # Shuffling
@@ -309,14 +352,15 @@ def load_cell_types(cell_types_file: Path = None):
     # Load from file
     df = pd.read_csv(cell_types_file)
     cell_types = df['cell_type'].tolist()
-    # Create series with cell type names as index and codes as values
-    cell_type_codes = pd.Series(df['code'].values, index=df['cell_type'].values)
+    # Create sequential codes from 0 to n-1 (ignore the 'code' column which has non-sequential values)
+    # The order in the CSV file defines the mapping
+    cell_type_codes = pd.Series(range(len(cell_types)), index=cell_types)
   else:
     # Use default from notebook (simplified for demo)
     # In production, load from a reference file
     print("Warning: Using simplified cell type list. Provide --cell-types-file for full list.")
     cell_types = [f"type_{i}" for i in range(377)]  # Placeholder
-    cell_type_codes = pd.Series(range(377))
+    cell_type_codes = pd.Series(range(377), index=cell_types)
   
   return cell_types, cell_type_codes
 
@@ -351,6 +395,46 @@ def run_training_with_config(config: TrainingConfig, cell_types: list, cell_type
   return final_metrics
 
 
+def validate_required_parameters(args, config=None):
+  """Validate that all required parameters are provided.
+  
+  Args:
+    args: Parsed command line arguments
+    config: Optional tuning config dict (for tuning mode)
+    
+  Returns:
+    List of error messages (empty if all required params present)
+  """
+  errors = []
+  
+  # Get effective values (command line overrides config)
+  def get_effective_value(param_name):
+    # Command line value takes precedence
+    cli_value = getattr(args, param_name, None)
+    if cli_value is not None:
+      return cli_value
+    
+    # Check config fixed_params if in tuning mode
+    if config and 'fixed_params' in config:
+      return config['fixed_params'].get(param_name)
+    
+    return None
+  
+  # Required parameters
+  required_params = [
+    ('local_data_dir', 'training data directory'),
+    ('test_data_dir', 'validation/test data directory'),
+  ]
+  
+  # Check each required parameter
+  for param_name, description in required_params:
+    effective_value = get_effective_value(param_name)
+    if not effective_value:
+      errors.append(f"Missing required parameter: {param_name} ({description})")
+  
+  return errors
+
+
 def main():
   """Main training function."""
   args = parse_args()
@@ -363,6 +447,21 @@ def main():
   if args.tuning_config:
     if not OPTUNA_AVAILABLE:
       print("Error: Optuna is required for hyperparameter tuning. Install with: pip install optuna")
+      sys.exit(1)
+    
+    # Load config for validation
+    import yaml
+    with open(args.tuning_config, 'r') as f:
+      config = yaml.safe_load(f)
+    
+    # Validate required parameters
+    validation_errors = validate_required_parameters(args, config)
+    if validation_errors:
+      print("Error: Missing required parameters:")
+      for error in validation_errors:
+        print(f"  - {error}")
+      print(f"\nEither specify these parameters on the command line or add them to the")
+      print(f"'fixed_params' section of your config file: {args.tuning_config}")
       sys.exit(1)
     
     print("\n" + "="*60)
@@ -394,57 +493,88 @@ def main():
       
       # Add trial number to wandb run name
       if config.wandb_project:
-        config.wandb_run_name = f"trial_{trial.number}"
+        # Format key parameters for run name
+        lr_str = f"{config.learning_rate:.1e}"  # Scientific notation
+        wd_str = f"{config.weight_decay:.1e}" if config.weight_decay > 0 else "0"
+        optimizer = getattr(config, 'optimizer_type', 'adam')
+        scheduler = getattr(config, 'lr_scheduler', 'none')
+        grad_clip = getattr(config, 'gradient_clip_val', 'none')
+        
+        # Create descriptive run name with trial number for sorting
+        config.wandb_run_name = (
+          f"{trial.number:03d}_dims{config.n_dims}_layers{config.n_hidden_layers}_"
+          f"drop{config.dropout:.3f}_bs{config.batch_size}_lr{lr_str}_wd{wd_str}_"
+          f"{optimizer}_{scheduler}"
+        )
+        
+        # Add gradient clipping to name if used
+        if grad_clip and grad_clip != 'none' and grad_clip is not None:
+          config.wandb_run_name += f"_clip{grad_clip}"
+        
         config.wandb_tags = ["optuna", f"trial_{trial.number}"]
       
-      # Run training
-      final_metrics = run_training_with_config(config, cell_types, cell_type_codes, trial)
+      # Create trainer (don't run it yet - OptunaManager will call .run())
+      trainer = MLPTrainer(
+        config=config,
+        cell_types=cell_types,
+        cell_type_codes=cell_type_codes
+      )
       
-      # Report intermediate values for pruning
-      for step in range(0, len(final_metrics.get('val_loss_history', [])), 10):
-        if 'val_loss_history' in final_metrics and step < len(final_metrics['val_loss_history']):
-          trial.report(final_metrics['val_loss_history'][step], step)
-          
-          # Check if trial should be pruned
-          if trial.should_prune():
-            raise optuna.TrialPruned()
+      # Add Optuna trial for pruning support
+      trainer.optuna_trial = trial
       
-      # Return optimization metric
-      return final_metrics
+      return trainer
     
     # Run optimization
+    print(f"Starting optimization with n_trials={args.tuning_n_trials}, timeout={args.tuning_timeout}")
     manager.run_optimization(
       trainer_factory=create_and_run_trainer,
       n_trials=args.tuning_n_trials,
       timeout=args.tuning_timeout
     )
     
-    # Get best configuration
+    # Optimization complete
     print("\n" + "="*60)
-    print("Optimization Complete - Training Final Model")
+    print("Hyperparameter Optimization Complete")
     print("="*60)
     
-    best_config = manager.get_best_config()
-    
-    # Override with command-line arguments for final training
-    if args.local_data_dir:
-      best_config.local_data_dir = args.local_data_dir
-    if args.test_data_dir:
-      best_config.test_data_dir = args.test_data_dir
-    if args.checkpoint_dir:
-      best_config.checkpoint_dir = args.checkpoint_dir
-    
-    # Run final training with best config
-    final_metrics = run_training_with_config(best_config, cell_types, cell_type_codes)
-    
     # Save optimization results
-    results_file = best_config.checkpoint_dir / "optuna_results.json"
+    results_file = args.checkpoint_dir / "optuna_results.json"
     manager.save_results(results_file)
+    
+    # Print best results
+    best_trial = manager.study.best_trial
+    print(f"\nBest trial: {best_trial.number}")
+    print(f"Best value: {best_trial.value:.4f}")
+    print(f"Best parameters:")
+    for key, value in best_trial.params.items():
+      print(f"  {key}: {value}")
+    
+    print(f"\nResults saved to: {results_file}")
+    print("\nTo train with the best parameters, use the saved configuration.")
+    
+    # Exit after optimization (no final training)
+    return
     
   else:
     # Normal training mode (non-tuning)
+    # Validate required parameters
+    validation_errors = validate_required_parameters(args)
+    if validation_errors:
+      print("Error: Missing required parameters:")
+      for error in validation_errors:
+        print(f"  - {error}")
+      print(f"\nPlease specify these parameters on the command line.")
+      sys.exit(1)
+    
     # Determine if hierarchical metrics should be enabled
     enable_hierarchical = args.enable_hierarchical_metrics and not args.disable_hierarchical_metrics
+    
+    # Determine if WandB artifacts should be enabled
+    enable_wandb_artifacts = args.wandb_save_artifacts and not args.no_wandb_artifacts
+    
+    # Determine if local checkpoints should be enabled
+    enable_local_checkpoints = args.local_checkpoints and not args.no_local_checkpoints
     
     # Create configuration
     config = TrainingConfig(
@@ -478,10 +608,16 @@ def main():
       wandb_entity=args.wandb_entity,
       wandb_run_name=args.wandb_run_name,
       wandb_tags=args.wandb_tags,
+      wandb_save_artifacts=enable_wandb_artifacts,
+      local_checkpoints=enable_local_checkpoints,
       # Resume and subset
       resume_from=args.resume_from,
       start_batch_file=args.start_batch_file,
       end_batch_file=args.end_batch_file,
+      max_steps_per_epoch=args.max_steps_per_epoch,
+      # Best model tracking
+      best_model_metric=args.best_model_metric,
+      best_model_mode=args.best_model_mode,
       # Shuffling
       shuffle_files_per_epoch=not args.no_shuffle_files,
       shuffle_within_files=not args.no_shuffle_within_files,

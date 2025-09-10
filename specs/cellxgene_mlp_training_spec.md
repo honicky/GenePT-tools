@@ -103,7 +103,7 @@ def get_batch_file(filename: str, local_dir: Path, s3_bucket: str, s3_key: str) 
     local_path = local_dir / filename
     
     if local_path.exists():
-        print(f"Using local file: {local_path}")
+        # print(f"Using local file: {local_path}")
         return local_path
     
     if download_if_missing:

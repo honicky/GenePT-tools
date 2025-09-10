@@ -124,26 +124,16 @@ class S3ParquetStreamDataset(IterableDataset):
     Returns:
       Array of integer codes
     """
-    # Get the subset of cell types we're training on
-    # cell_types is already the list of cell type names we're training on
-    training_cell_types = self.cell_types
+    # Map cell types to codes using the provided mapping
+    # self.cell_type_codes is a Series with cell type names as index and codes as values
+    codes = cell_type_series.map(self.cell_type_codes)
     
-    # Convert to categorical using only the training cell types
-    categorical = cell_type_series.astype(
-      pd.CategoricalDtype(categories=training_cell_types)
-    )
+    # Check for unmapped cell types (NaN values)
+    if codes.isna().any():
+      unmapped = cell_type_series[codes.isna()].unique()
+      raise ValueError(f"Found unmapped cell types: {unmapped[:5]}... This should not happen after filtering!")
     
-    # Get codes (-1 for unknown cell types)
-    codes = categorical.cat.codes
-    
-    # Filter out unknown cell types
-    valid_mask = codes >= 0
-    if not valid_mask.all():
-      if self.verbose:
-        print(f"Warning: Filtering out {(~valid_mask).sum()} samples with unknown cell types")
-      codes = codes[valid_mask]
-    
-    return codes.values
+    return codes.values.astype(np.int64)
   
   def _process_batch_file(self, file_path: Path) -> Iterator[Tuple[torch.Tensor, torch.Tensor]]:
     """Process a single batch file and yield mini-batches.
@@ -174,6 +164,10 @@ class S3ParquetStreamDataset(IterableDataset):
     embedding_cols = [str(i) for i in range(self.n_dims)]
     X = df[embedding_cols].values.astype(np.float32)
     
+    # Scale embeddings to have unit variance (important for neural network training)
+    # OpenAI embeddings have very small std (~0.026) which causes training issues
+    X = X / 0.026  # Approximate std of OpenAI embeddings
+    
     # Encode labels
     y = self._encode_labels(df['cell_type'])
     
@@ -195,8 +189,22 @@ class S3ParquetStreamDataset(IterableDataset):
     Yields:
       Tuples of (X, y) tensors for each mini-batch
     """
-    # Get file list
-    files = self.s3_files.copy()
+    # Handle multi-worker data loading
+    worker_info = torch.utils.data.get_worker_info()
+    if worker_info is not None:
+      # Split files among workers
+      worker_id = worker_info.id
+      num_workers = worker_info.num_workers
+      files = self.s3_files.copy()
+      
+      # Assign files to this worker
+      files = [f for i, f in enumerate(files) if i % num_workers == worker_id]
+      
+      if self.verbose and worker_id == 0:
+        print(f"Worker {worker_id} processing {len(files)} files out of {len(self.s3_files)} total")
+    else:
+      # Single process mode
+      files = self.s3_files.copy()
     
     # Shuffle file order if requested (but not on first epoch to match notebook)
     if self.shuffle_files_per_epoch:
@@ -223,7 +231,9 @@ class S3ParquetStreamDataset(IterableDataset):
   
   def __len__(self):
     """Estimate total number of batches (approximate)."""
-    # Each file has ~10,000 samples
-    samples_per_file = 10000
+    # Each file has ~10,000 samples, but many are filtered out
+    # Estimate ~70% remain after cell type filtering
+    samples_per_file = 7000
     total_samples = len(self.s3_files) * samples_per_file
+    # Note: This returns total batches across ALL workers combined
     return total_samples // self.batch_size
