@@ -731,18 +731,18 @@ class MLPTrainer:
       self.train_epoch(dataloader, epoch)
       
       # Epoch completion is already shown in the progress bar
-      
-      # Full validation at end of epoch (metrics shown in progress bar)
-      if self.X_val_120k is not None:
-        self.evaluate_validation(use_5k=False)
-        # Commit the end-of-epoch validation metrics
-        if self.wandb_run is not None:
-          self.wandb_run.log({}, step=self.global_step, commit=True)
+      # Validation already happens during the epoch via threshold triggers
+      # No need for additional end-of-epoch validation which causes step ordering issues
     
-    # Save final checkpoint
+    # Final validation at end of all training (since we may not end on a validation boundary)
     final_metrics = {}
     if self.X_val_120k is not None:
+      # Increment step for final validation to avoid conflicts
+      self.global_step += 1
       final_metrics = self.evaluate_validation(use_5k=False)
+      # Commit the final validation metrics since we're done training
+      if self.wandb_run is not None:
+        self.wandb_run.log({}, step=self.global_step, commit=True)
     
     final_checkpoint_path = None
     
