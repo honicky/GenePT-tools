@@ -10,9 +10,12 @@ GenePT-tools is a Python bioinformatics toolkit for generating and analyzing gen
 
 ### Environment Setup
 ```bash
-# Install dependencies (uses uv package manager)
+# Install all dependencies including dev dependencies (uses uv package manager)
+# Dev dependencies are installed by default with uv sync
 uv sync
-uv pip install -e '.[dev]'
+
+# To install without dev dependencies
+uv sync --no-dev
 ```
 
 ### Code Formatting

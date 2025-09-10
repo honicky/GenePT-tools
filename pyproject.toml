@@ -30,9 +30,10 @@ dependencies = [
     "xgboost>=3.0.1",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "matplotlib",
+    "nbdime",
     "seaborn",
     "black[jupyter]",
     "duckdb",
@@ -41,12 +42,12 @@ dev = [
     "jupyterlab",
     "pip-tools",
     "plotly",
-    "pytest",
-    "yapf==0.40.2",
-]
-
-with_torch = [
+    "pytest>=8.1.1,<9",
+    "pytest-env",
+    "pytest-xdist",
+    "ruff",
     "torch==2.4.0",
+    "yapf==0.40.2",
 ]
 
 [tool.pytest.ini_options]

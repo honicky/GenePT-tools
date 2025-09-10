@@ -206,4 +206,4 @@ wandb/
 checkpoints/
 
 # CSV data files (keep cell_types_filtered.csv tracked)
-# *.csv
+*.csv

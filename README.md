@@ -35,8 +35,11 @@ We use `uv` for package management.  Install using the instructions at https://d
 Then:
 
 ```bash
+# Install all dependencies including dev dependencies (default behavior)
 uv sync
-uv pip install -e '.[dev]' # to use testing tools etc
+
+# Or install without dev dependencies
+uv sync --no-dev
 ```
 
 ### Running tools
