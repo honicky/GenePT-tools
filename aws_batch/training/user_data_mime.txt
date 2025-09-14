@@ -1,0 +1,204 @@
+Content-Type: multipart/mixed; boundary="==MYBOUNDARY=="
+MIME-Version: 1.0
+
+--==MYBOUNDARY==
+Content-Type: text/x-shellscript; charset="us-ascii"
+
+#!/bin/bash
+set -x
+
+# Log startup
+echo "Starting GPU instance initialization with MemVerge at $(date)"
+
+# Mount data volume (read-only)
+echo "Mounting data volume..."
+mkdir -p /data
+mount -o ro /dev/xvdb /data
+echo "/dev/xvdb /data ext4 ro,defaults 0 0" >> /etc/fstab
+
+# Setup instance store for scratch
+echo "Setting up instance store..."
+INSTANCE_STORE="/dev/nvme1n1"
+if [ -b "$INSTANCE_STORE" ]; then
+    mkfs.ext4 -F $INSTANCE_STORE
+    mkdir -p /scratch
+    mount -o noatime $INSTANCE_STORE /scratch
+    echo "$INSTANCE_STORE /scratch ext4 defaults,noatime 0 0" >> /etc/fstab
+    
+    # Create scratch subdirectories
+    mkdir -p /scratch/{checkpoints,tensorboard,tmp,outputs,wandb}
+    chmod 777 /scratch/*
+    echo "Instance store mounted at /scratch"
+else
+    echo "Warning: No instance store found, using root volume for scratch"
+    mkdir -p /scratch/{checkpoints,tensorboard,tmp,outputs,wandb}
+    chmod 777 /scratch/*
+fi
+
+# Configure ECS for GPU support with MemVerge cluster name
+echo "Configuring ECS..."
+cat >> /etc/ecs/ecs.config <<EOF
+ECS_CLUSTER=miratyper-gpu-memverge_Batch_7ecfc17d-38b4-3977-880f-43dbe0789807
+ECS_ENABLE_GPU_SUPPORT=true
+ECS_NVIDIA_RUNTIME=nvidia
+ECS_CONTAINER_START_TIMEOUT=10m
+ECS_CONTAINER_CREATE_TIMEOUT=10m
+ECS_ENABLE_SPOT_INSTANCE_DRAINING=true
+ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION=1h
+ECS_IMAGE_PULL_BEHAVIOR=prefer-cached
+EOF
+
+# Verify GPU is available
+echo "Verifying GPU..."
+nvidia-smi
+if [ $? -eq 0 ]; then
+    echo "GPU detected successfully"
+    nvidia-smi -L
+else
+    echo "ERROR: No GPU detected!"
+fi
+
+# ============================================
+# MemVerge MMBatch Agent Installation
+# ============================================
+echo "Installing MemVerge MMBatch agent..."
+
+# Set MemVerge server address (using private IP for internal communication)
+MMAB_SERVER_ADDRESS="172.31.19.221"
+MMAB_SERVER_PORT="8080"
+
+# Create checkpoint directory (using local scratch for performance)
+mkdir -p /scratch/mmc-checkpoint
+chmod 777 /scratch/mmc-checkpoint
+ln -sf /scratch/mmc-checkpoint /mmc-checkpoint
+
+# Install MemVerge pagent (agent)
+echo "Downloading and installing MemVerge agent from server..."
+curl -k https://${MMAB_SERVER_ADDRESS}:${MMAB_SERVER_PORT}/api/v1/scripts/install-pagent | bash
+
+# Configure pagent to connect to management server
+cat > /etc/memverge/pagent.conf <<EOF
+{
+  "serverAddr": "https://${MMAB_SERVER_ADDRESS}:${MMAB_SERVER_PORT}",
+  "checkpointPath": "/mmc-checkpoint",
+  "logLevel": "info",
+  "heartbeatInterval": "30s"
+}
+EOF
+
+# Start pagent service
+systemctl enable pagent
+systemctl start pagent
+
+# Verify pagent is running
+sleep 5
+if systemctl is-active --quiet pagent; then
+    echo "MemVerge pagent is running successfully"
+else
+    echo "Warning: MemVerge pagent failed to start"
+    systemctl status pagent
+fi
+
+# ============================================
+# End MemVerge Setup
+# ============================================
+
+# Install and configure CloudWatch agent for GPU metrics
+echo "Setting up CloudWatch GPU monitoring..."
+yum install -y amazon-cloudwatch-agent
+
+# Create CloudWatch config for GPU metrics
+cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<EOF
+{
+  "metrics": {
+    "namespace": "MiraTyper/GPU",
+    "metrics_collected": {
+      "cpu": {
+        "measurement": [
+          {"name": "cpu_usage_idle", "rename": "CPU_IDLE", "unit": "Percent"},
+          {"name": "cpu_usage_iowait", "rename": "CPU_IOWAIT", "unit": "Percent"}
+        ],
+        "metrics_collection_interval": 60
+      },
+      "disk": {
+        "measurement": [
+          {"name": "used_percent", "rename": "DISK_USED", "unit": "Percent"}
+        ],
+        "metrics_collection_interval": 60,
+        "resources": ["/", "/scratch", "/data", "/mmc-checkpoint"]
+      },
+      "mem": {
+        "measurement": [
+          {"name": "mem_used_percent", "rename": "MEM_USED", "unit": "Percent"}
+        ],
+        "metrics_collection_interval": 60
+      }
+    }
+  }
+}
+EOF
+
+# Start CloudWatch agent
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+    -a fetch-config \
+    -m ec2 \
+    -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json \
+    -s
+
+# Setup GPU metrics collection script
+cat > /usr/local/bin/gpu_metrics.sh <<'SCRIPT'
+#!/bin/bash
+while true; do
+    # Get GPU metrics
+    GPU_UTIL=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits)
+    MEM_UTIL=$(nvidia-smi --query-gpu=utilization.memory --format=csv,noheader,nounits)
+    TEMP=$(nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits)
+    POWER=$(nvidia-smi --query-gpu=power.draw --format=csv,noheader,nounits)
+    
+    # Send to CloudWatch
+    aws cloudwatch put-metric-data \
+        --namespace "MiraTyper/GPU" \
+        --metric-name GPUUtilization --value $GPU_UTIL --unit Percent
+    aws cloudwatch put-metric-data \
+        --namespace "MiraTyper/GPU" \
+        --metric-name GPUMemoryUtilization --value $MEM_UTIL --unit Percent
+    aws cloudwatch put-metric-data \
+        --namespace "MiraTyper/GPU" \
+        --metric-name GPUTemperature --value $TEMP --unit None
+    aws cloudwatch put-metric-data \
+        --namespace "MiraTyper/GPU" \
+        --metric-name GPUPowerDraw --value $POWER --unit None
+    
+    sleep 60
+done
+SCRIPT
+chmod +x /usr/local/bin/gpu_metrics.sh
+
+# Start GPU metrics collection in background
+nohup /usr/local/bin/gpu_metrics.sh > /var/log/gpu_metrics.log 2>&1 &
+
+# PyTorch optimizations
+echo "Setting PyTorch optimizations..."
+cat >> /etc/environment <<EOF
+PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+CUDA_LAUNCH_BLOCKING=0
+CUDNN_BENCHMARK=1
+OMP_NUM_THREADS=4
+EOF
+
+# System optimizations for ML workloads
+echo "Applying system optimizations..."
+# Increase memory map limit for PyTorch DataLoader
+sysctl -w vm.max_map_count=262144
+# Network optimizations for distributed training (future)
+sysctl -w net.core.rmem_max=134217728
+sysctl -w net.core.wmem_max=134217728
+sysctl -w net.ipv4.tcp_rmem="4096 87380 134217728"
+sysctl -w net.ipv4.tcp_wmem="4096 65536 134217728"
+
+# Create marker file to indicate successful initialization
+touch /var/lib/cloud/instance/gpu-memverge-initialized
+
+echo "GPU instance initialization with MemVerge complete at $(date)"
+
+--==MYBOUNDARY==--

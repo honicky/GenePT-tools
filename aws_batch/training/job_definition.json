@@ -1,0 +1,106 @@
+{
+  "jobDefinitionName": "genept-training-job",
+  "type": "container",
+  "platformCapabilities": ["EC2"],
+  "parameters": {
+    "config_file": "s3://genept-training-configs/default_config.yaml",
+    "wandb_project": "genept-training",
+    "epochs": "50",
+    "batch_size": "512",
+    "learning_rate": "0.001"
+  },
+  "containerProperties": {
+    "image": "YOUR_ECR_REPOSITORY_URI:latest",
+    "vcpus": 8,
+    "memory": 30720,
+    "resourceRequirements": [
+      {
+        "type": "GPU",
+        "value": "1"
+      }
+    ],
+    "jobRoleArn": "arn:aws:iam::BATCH_ACCOUNT_ID:role/genept-training-job-role",
+    "executionRoleArn": "arn:aws:iam::BATCH_ACCOUNT_ID:role/genept-training-execution-role",
+    "volumes": [
+      {
+        "name": "data",
+        "host": {
+          "sourcePath": "/data"
+        }
+      },
+      {
+        "name": "scratch",
+        "host": {
+          "sourcePath": "/scratch"
+        }
+      }
+    ],
+    "mountPoints": [
+      {
+        "sourceVolume": "data",
+        "containerPath": "/data",
+        "readOnly": true
+      },
+      {
+        "sourceVolume": "scratch",
+        "containerPath": "/scratch",
+        "readOnly": false
+      }
+    ],
+    "environment": [
+      {
+        "name": "DATA_ROOT",
+        "value": "/data/GenePT-Tools/data"
+      },
+      {
+        "name": "CHECKPOINT_DIR",
+        "value": "/scratch/checkpoints"
+      },
+      {
+        "name": "OUTPUT_DIR",
+        "value": "/scratch/outputs"
+      },
+      {
+        "name": "CUDA_VISIBLE_DEVICES",
+        "value": "0"
+      },
+      {
+        "name": "PYTORCH_CUDA_ALLOC_CONF",
+        "value": "max_split_size_mb:512"
+      },
+      {
+        "name": "WANDB_DIR",
+        "value": "/scratch/wandb"
+      }
+    ],
+    "secrets": [
+      {
+        "name": "WANDB_API_KEY",
+        "valueFrom": "arn:aws:secretsmanager:us-east-1:BATCH_ACCOUNT_ID:secret:wandb_api_key"
+      }
+    ],
+    "command": [
+      "--config", "Ref::config_file",
+      "--wandb-project", "Ref::wandb_project",
+      "--epochs", "Ref::epochs",
+      "--batch-size", "Ref::batch_size",
+      "--learning-rate", "Ref::learning_rate",
+      "--data-dir", "/data/GenePT-Tools/data/cellxgene_v2",
+      "--checkpoint-dir", "/scratch/checkpoints"
+    ],
+    "logConfiguration": {
+      "logDriver": "awslogs",
+      "options": {
+        "awslogs-group": "/aws/batch/genept-training",
+        "awslogs-region": "us-east-1",
+        "awslogs-stream-prefix": "training"
+      }
+    }
+  },
+  "timeout": {
+    "attemptDurationSeconds": 43200
+  },
+  "retryStrategy": {
+    "attempts": 2
+  }
+}

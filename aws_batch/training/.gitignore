@@ -1,0 +1,26 @@
+# Environment files with secrets
+.env
+.env.local
+.env.production
+
+# AWS credentials
+*.pem
+credentials
+config
+
+# Temporary files
+*.tmp
+/tmp/
+
+# Log files
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Backup files
+*.bak
+*.backup
+*~

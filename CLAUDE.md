@@ -124,3 +124,5 @@ uv run pytest -v
 - Cell type codes must be sequential (0 to n-1) for proper model output dimensions
 - Hyperparameter tuning automatically retries failed trials to reach target count
 - WandB artifacts are used for checkpoint storage during hyperparameter optimization
+- use the "memverge" aws profile for all aws commands
+- docs are containted in the docs/ folder, and specs that describe feature implementation are in the specs/ folder
