@@ -207,3 +207,13 @@ checkpoints/
 
 # CSV data files (keep cell_types_filtered.csv tracked)
 *.csv
+
+# Temporary test files
+test_cache/
+test_aws*.py
+
+# Latch-specific files (if not needed for this project)
+latch_src/
+
+# Notebook-specific directories with random names
+notebooks/*/

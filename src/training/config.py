@@ -18,7 +18,7 @@ class TrainingConfig:
   test_data_dir: Optional[Path] = None
   s3_bucket: str = "pythiomicsdata"
   s3_prefix: str = "cellxgene_v2/training_v1_suffled"
-  aws_profile: str = "xcellerate"
+  aws_profile: str = None
   download_if_missing: bool = True
   n_dims: int = 500  # Embedding dimension used in best notebook run
   

@@ -1,0 +1,115 @@
+# MemVerge Test Hyperparameter Tuning Configuration
+# Based on working tuning_config_input_size.yaml, modified for quick testing
+# Tests checkpoint/restore functionality with spot instances
+
+# Optuna Study Configuration
+optuna:
+  study_name: "memverge-tuning-test"
+  direction: "maximize"  # F1 scores should be maximized
+  metric_to_optimize: "hierarchical_f1"
+  n_trials: 3  # Only 3 trials for quick testing
+  n_epochs_per_trial: 2  # Train for 2 epochs per trial
+  ensure_successful_trials: true  # Only count successful trials toward n_trials target
+  
+  # Sampler with minimal startup trials for quick testing
+  sampler:
+    type: "TPESampler"
+    n_startup_trials: 2  # Minimal for quick test
+    seed: 42
+  
+  # Moderate pruning to save compute
+  pruner:
+    type: "MedianPruner"
+    n_startup_trials: 2
+    n_warmup_steps: 500
+    interval_steps: 100
+
+# Limited Hyperparameter Search Space for Testing
+hyperparameters:
+  # Model architecture - test just 2 dimensions for speed
+  n_dims:
+    type: "categorical"
+    choices: [500, 1500]  # Just small and medium for quick test
+    default: 500
+  
+  n_hidden_layers:
+    type: "int"
+    low: 2
+    high: 3
+    default: 3
+  
+  dropout:
+    type: "float"
+    low: 0.0
+    high: 0.3
+    default: 0.053
+  
+  learning_rate:
+    type: "float"
+    low: 1e-4
+    high: 5e-3
+    default: 0.001
+    log: true
+  
+  weight_decay:
+    type: "float"
+    low: 0
+    high: 1e-4
+    default: 1e-5
+    log: false
+
+# Fixed Parameters
+fixed_params:
+  # Data settings - CRITICAL: disable S3 fallback
+  s3_bucket: "pythiomicsdata"
+  s3_prefix: "cellxgene_v2/training_v1_suffled"
+  local_data_dir: "/data/GenePT-tools/data/cellxgene_embeddings/training_v1_shuffled_pt"
+  test_data_dir: "/data/GenePT-tools/data/cellxgene_embeddings/test_v1_pt"
+  download_if_missing: false  # CRITICAL: Disable S3 fallback to prevent slow streaming
+  
+  # WandB project for MemVerge testing
+  wandb_project: "memverge-tuning-test"
+  
+  # Evaluation settings - from working config
+  eval_every_n_batches: 25
+  eval_full_every_n_batches: 250
+  checkpoint_every_n_batches: 1000
+  
+  # System settings
+  device: "auto"
+  num_workers: 4
+  seed: 42
+
+  # Training parameters - larger batch size for efficiency
+  batch_size: 4096
+  optimizer_type: "adamw"
+  
+  # Features
+  enable_hierarchical_metrics: true
+  shuffle_files_per_epoch: true
+  shuffle_within_files: true
+  
+  # Note: cell_types_filtered.csv should be available at /data/GenePT-Tools/
+
+# Warm-start strategy (disabled for testing)
+warm_start_strategy:
+  enabled: false
+
+# Early stopping for individual trials
+early_stopping:
+  patience: 50  # Reduced for faster testing
+  min_delta: 0.001
+  monitor: "hierarchical_f1"
+  mode: "max"
+
+# Resource management
+resources:
+  timeout_per_trial: 1800  # 30 minutes max per trial
+  n_jobs: 1  # Single GPU per trial
+
+# MemVerge Test Notes:
+# - This config is designed to complete quickly (5 trials, ~1 hour total)
+# - Frequent checkpointing (every 50 batches) to test MemVerge functionality
+# - If spot instance is interrupted, job should restore from checkpoint
+# - Monitor via MemVerge dashboard at https://35.90.252.151:8080
+# - Check checkpoint creation at /scratch/checkpoints/

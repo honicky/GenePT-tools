@@ -1,0 +1,55 @@
+{
+  "jobDefinitionName": "genept-debug-filesystem",
+  "type": "container",
+  "platformCapabilities": ["EC2"],
+  "containerProperties": {
+    "image": "971422677163.dkr.ecr.us-west-2.amazonaws.com/miratyper-training:debug",
+    "vcpus": 2,
+    "memory": 4096,
+    "jobRoleArn": "arn:aws:iam::971422677163:role/genept-training-job-role",
+    "executionRoleArn": "arn:aws:iam::971422677163:role/genept-training-execution-role",
+    "volumes": [
+      {
+        "name": "data",
+        "host": {
+          "sourcePath": "/data"
+        }
+      },
+      {
+        "name": "scratch",
+        "host": {
+          "sourcePath": "/scratch"
+        }
+      }
+    ],
+    "mountPoints": [
+      {
+        "sourceVolume": "data",
+        "containerPath": "/data",
+        "readOnly": true
+      },
+      {
+        "sourceVolume": "scratch",
+        "containerPath": "/scratch",
+        "readOnly": false
+      }
+    ],
+    "environment": [
+      {
+        "name": "PYTHONUNBUFFERED",
+        "value": "1"
+      }
+    ],
+    "command": [
+      "python",
+      "/app/scripts/debug_filesystem.py"
+    ],
+    "logConfiguration": {
+      "logDriver": "awslogs",
+      "options": {
+        "awslogs-group": "/aws/batch/job",
+        "awslogs-stream-prefix": "genept-debug"
+      }
+    }
+  }
+}

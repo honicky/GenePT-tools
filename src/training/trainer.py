@@ -676,10 +676,27 @@ class MLPTrainer:
     print(f"[DEBUG] Config learning_rate: {self.config.learning_rate}")
     
     # Create dataset - auto-detect format based on directory contents
-    local_data_path = Path(self.config.local_data_dir)
+    local_data_path = Path(self.config.local_data_dir) if self.config.local_data_dir else None
     
     # Check if directory contains .pt files (fast format)
-    pt_files = list(local_data_path.glob("*.pt"))
+    if local_data_path and local_data_path.exists():
+      print(f"[DEBUG] Local data path exists: {local_data_path}")
+      pt_files = list(local_data_path.glob("*.pt"))
+      print(f"[DEBUG] Found {len(pt_files)} .pt files")
+      if pt_files:
+        print(f"[DEBUG] First few .pt files: {[f.name for f in pt_files[:5]]}")
+    else:
+      if local_data_path:
+        print(f"[DEBUG] Local data path does not exist: {local_data_path}")
+        # In AWS Batch, if the path doesn't exist, there might be a mount issue
+        # Let's check what directories do exist
+        parent = local_data_path.parent
+        if parent.exists():
+          print(f"[DEBUG] Parent directory exists: {parent}")
+          print(f"[DEBUG] Contents: {list(parent.iterdir())[:10]}")
+      else:
+        print(f"[DEBUG] Local data path is None")
+      pt_files = []
     
     if pt_files and any(f.name.startswith("batch_") for f in pt_files):
       # Use fast PT dataset

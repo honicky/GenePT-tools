@@ -1,5 +1,4 @@
-# PyTorch base image with CUDA support for A10G GPUs
-# Use --platform to ensure AMD64 for AWS deployment
+# Debug Dockerfile - without train_wrapper.py as entrypoint
 FROM --platform=linux/amd64 pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
 
 # Install system dependencies including build tools
@@ -32,10 +31,5 @@ ENV OUTPUT_DIR=/scratch/outputs
 ENV WANDB_DIR=/scratch/wandb
 ENV PYTHONUNBUFFERED=1
 
-# Verify GPU support
-RUN python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}')"
-
-# Default entrypoint for training
-# Can be overridden in job definition for debugging
-ENTRYPOINT ["python", "/app/scripts/train_wrapper.py"]
-# For debugging, override with: ["/bin/bash", "-c", "command"]
+# No ENTRYPOINT - allow job definition to specify command
+CMD ["/bin/bash"]

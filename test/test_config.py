@@ -29,7 +29,7 @@ class TestTrainingConfig:
     # Check defaults
     assert config.s3_bucket == "pythiomicsdata"
     assert config.s3_prefix == "cellxgene_v2/training_v1_suffled"
-    assert config.aws_profile == "xcellerate"
+    assert config.aws_profile is None
     assert config.seed == 42
   
   def test_custom_initialization(self):

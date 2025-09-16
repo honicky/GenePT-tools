@@ -1,233 +1,555 @@
-# AWS Batch Training Pipeline for GenePT
+# AWS Batch GPU Training with MemVerge
 
-This directory contains the infrastructure for running GenePT training jobs on AWS Batch with GPU support and pre-populated data volumes.
+This guide covers setting up and using AWS Batch for GPU-accelerated training with MemVerge checkpoint/restore capabilities.
 
 ## Architecture Overview
 
-- **GPU Compute**: p3.2xlarge instances with NVIDIA V100 GPUs
+- **GPU Compute**: g5 instances with NVIDIA A10G GPUs
 - **Data Strategy**: EBS snapshot with pre-populated training data (zero download time)
 - **Model Tracking**: WandB for metrics and model artifacts
-- **Cost Optimization**: Spot instances with 70% discount
+- **Cost Optimization**: Spot instances with checkpoint/restore via MemVerge
+
+## Table of Contents
+- [Prerequisites](#prerequisites)
+- [Environment Setup](#environment-setup)
+- [Data Preparation](#data-preparation)
+- [Creating and Submitting Jobs](#creating-and-submitting-jobs)
+- [Monitoring Jobs](#monitoring-jobs)
+- [Setting Up New MemVerge Queues](#setting-up-new-memverge-queues)
+- [Troubleshooting](#troubleshooting)
 
 ## Prerequisites
 
-1. AWS CLI configured with appropriate credentials
-2. Docker installed locally
-3. EBS snapshot with training data (snap-0b1c573caa4318e2f)
-4. WandB account and API key
+### Required Tools
+- AWS CLI v2 installed and configured
+- Docker installed for building container images
+- Python 3.10+ for local testing
+- jq for JSON processing (optional but helpful)
 
-## Phase 1: Basic Infrastructure Setup
+### AWS Permissions
+Your AWS user/role needs permissions for:
+- **AWS Batch**: Create/manage compute environments, job queues, job definitions
+- **EC2**: Launch instances, create/manage launch templates, EBS snapshots
+- **ECR**: Push/pull Docker images
+- **IAM**: Create/manage roles and instance profiles
+- **CloudWatch Logs**: Read log streams
+- **Secrets Manager**: Store/retrieve secrets (for WandB API keys)
+- **S3**: Read configuration files and training data
 
-### Step 1: Configure AWS Account
+### Required IAM Roles
 
-Export your AWS account ID:
-```bash
-export AWS_ACCOUNT_ID=YOUR_ACCOUNT_ID
-export AWS_DEFAULT_REGION=us-east-1
+1. **Batch Service Role** (`aws-batch-service-role`):
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Service": "batch.amazonaws.com"},
+    "Action": "sts:AssumeRole"
+  }]
+}
 ```
+Attach policy: `arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole`
 
-### Step 2: Run Setup Script
+2. **ECS Task Execution Role** (`genept-training-execution-role`):
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Service": "ecs-tasks.amazonaws.com"},
+    "Action": "sts:AssumeRole"
+  }]
+}
+```
+Attach policy: `arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy`
 
+3. **ECS Task Role** (`genept-training-job-role`):
+Custom policy for S3, Secrets Manager, and CloudWatch access.
+
+## Environment Setup
+
+### 1. Create `.env` File
 ```bash
 cd aws_batch/training
-chmod +x setup_infrastructure.sh
-./setup_infrastructure.sh
+cp .env.example .env
 ```
 
-The script will:
-1. Create ECR repository and push Docker image
-2. Set up IAM roles with necessary permissions
-3. Store WandB API key in Secrets Manager
-4. Create launch template with data volume attachment
-5. Configure GPU compute environment with spot instances
-6. Create job queue and job definition
-7. Set up CloudWatch logging
-
-### Step 3: Verify Setup
-
-Check that resources were created:
+Edit `.env` with your values:
 ```bash
-# Check compute environment
-aws batch describe-compute-environments --compute-environments genept-training-gpu-env
+# AWS Configuration
+AWS_ACCOUNT_ID=971422677163
+AWS_REGION=us-west-2
+AWS_PROFILE=memverge
 
-# Check job queue
-aws batch describe-job-queues --job-queues genept-training-queue
+# ECR Repository
+ECR_REPOSITORY=miratyper-training
 
-# Check job definition
-aws batch describe-job-definitions --job-definition-name genept-training-job --status ACTIVE
+# S3 Buckets
+CONFIG_BUCKET=miratyper-training-configs
+OUTPUT_BUCKET=miratyper-training-outputs
+DATA_BUCKET=pythiomicsdata
+
+# EBS Snapshot with training data
+DATA_SNAPSHOT_ID=snap-09a79b0190b9df72e
+
+# Secrets
+WANDB_SECRET_NAME=wandb-api-key
+
+# Compute Environment
+INSTANCE_TYPES=g5.2xlarge,g5.4xlarge,g5.8xlarge
+MAX_VCPUS=256
 ```
 
-## Submitting Training Jobs
-
-### Basic Job Submission
-
+### 2. Configure AWS CLI
 ```bash
-python submit_job.py \
-    --job-name experiment-001 \
-    --epochs 100 \
-    --batch-size 1024 \
-    --learning-rate 0.001
+aws configure --profile memverge
+# Enter your AWS Access Key ID
+# Enter your AWS Secret Access Key
+# Default region: us-west-2
+# Default output format: json
 ```
 
-### With Custom Configuration
-
+### 3. Login to ECR
 ```bash
-python submit_job.py \
-    --job-name experiment-002 \
-    --config configs/my_config.yaml \
-    --wandb-project genept-experiments
+aws ecr get-login-password --region us-west-2 --profile memverge | \
+  docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com
 ```
 
-### Submit Without Monitoring
+## Data Preparation
 
+### Creating/Updating EBS Snapshots
+
+1. **Launch a temporary EC2 instance** with sufficient storage:
 ```bash
-python submit_job.py \
-    --job-name experiment-003 \
-    --no-monitor \
-    --epochs 50
+aws ec2 run-instances \
+  --image-id ami-0c94755bb95c71c0a \
+  --instance-type t3.xlarge \
+  --key-name your-key \
+  --security-group-ids sg-xxxxxxxx \
+  --subnet-id subnet-xxxxxxxx \
+  --block-device-mappings '[{
+    "DeviceName": "/dev/xvdb",
+    "Ebs": {"VolumeSize": 600, "VolumeType": "gp3"}
+  }]' \
+  --profile memverge
 ```
 
-## Data Volume Structure
-
-The EBS snapshot contains pre-populated data mounted at `/data`:
-```
-/data/GenePT-Tools/data/
-├── cellxgene_v2/
-│   ├── training_v1_shuffled/    # Training data in PT format
-│   └── validation/               # Validation datasets
-├── ontology/                     # Cell Ontology cache
-└── cell_types.csv               # Cell type mappings
-```
-
-## Configuration Management
-
-### Default Configuration
-
-A default configuration is stored at `s3://genept-training-configs/default_config.yaml`:
-```yaml
-model:
-  input_dim: 3072
-  hidden_dims: [2048, 512, 256]
-  num_classes: 107
-  dropout: 0.2
-  
-training:
-  batch_size: 512
-  epochs: 50
-  learning_rate: 0.001
-```
-
-### Custom Configurations
-
-Upload custom configs to S3:
+2. **Mount and prepare the volume**:
 ```bash
-aws s3 cp my_config.yaml s3://genept-training-configs/
+# SSH into instance
+ssh -i your-key.pem ec2-user@instance-ip
+
+# Format and mount the volume
+sudo mkfs -t ext4 /dev/xvdb
+sudo mkdir /data
+sudo mount /dev/xvdb /data
+sudo chown ec2-user:ec2-user /data
+
+# Create directory structure
+mkdir -p /data/GenePT-tools/data/cellxgene_embeddings
 ```
 
-Or pass them directly when submitting:
+3. **Copy training data** to the volume:
 ```bash
-python submit_job.py --job-name test --config my_config.yaml
+# Example: Copy from S3
+aws s3 sync s3://your-data-source/ /data/GenePT-tools/data/ --profile your-profile
+
+# Or copy from local
+rsync -avz local-data/ ec2-user@instance-ip:/data/GenePT-tools/data/
 ```
+
+4. **Create snapshot**:
+```bash
+# Get volume ID
+VOLUME_ID=$(aws ec2 describe-instances \
+  --instance-ids i-xxxxxxxxx \
+  --query "Reservations[0].Instances[0].BlockDeviceMappings[?DeviceName=='/dev/xvdb'].Ebs.VolumeId" \
+  --output text \
+  --profile memverge)
+
+# Create snapshot
+aws ec2 create-snapshot \
+  --volume-id $VOLUME_ID \
+  --description "GenePT training data $(date +%Y%m%d)" \
+  --tag-specifications 'ResourceType=snapshot,Tags=[{Key=Name,Value=genept-training-data}]' \
+  --profile memverge
+```
+
+5. **Update launch template** with new snapshot ID (see MemVerge setup section).
+
+## Creating and Submitting Jobs
+
+### 1. Build and Push Docker Image
+```bash
+# Build the Docker image
+docker build --platform linux/amd64 -f aws_batch/training/Dockerfile -t miratyper-training .
+
+# Tag for ECR
+docker tag miratyper-training:latest \
+  ${AWS_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com/miratyper-training:latest
+
+# Push to ECR
+docker push ${AWS_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com/miratyper-training:latest
+```
+
+### 2. Register Job Definition
+```bash
+# For hyperparameter tuning jobs
+aws batch register-job-definition \
+  --cli-input-json file://aws_batch/training/job_definition_tuning.json \
+  --region us-west-2 \
+  --profile memverge
+```
+
+### 3. Submit a Job
+```bash
+# Basic submission
+aws batch submit-job \
+  --job-name "tuning-$(date +%Y%m%d-%H%M%S)" \
+  --job-queue "miratyper-memverge-queue" \
+  --job-definition "genept-tuning-job" \
+  --parameters tuning_config=s3://miratyper-training-configs/tuning_config.yaml,wandb_project=my-project \
+  --region us-west-2 \
+  --profile memverge
+
+# With custom parameters
+aws batch submit-job \
+  --job-name "custom-tuning-$(date +%Y%m%d-%H%M%S)" \
+  --job-queue "miratyper-memverge-queue" \
+  --job-definition "genept-tuning-job" \
+  --parameters tuning_config=s3://miratyper-training-configs/custom_config.yaml,wandb_project=custom-project \
+  --container-overrides '{"vcpus":8,"memory":61440}' \
+  --region us-west-2 \
+  --profile memverge
+```
+
+### 4. Job Definition Structure
+
+Key components in `job_definition_tuning.json`:
+```json
+{
+  "jobDefinitionName": "genept-tuning-job",
+  "type": "container",
+  "containerProperties": {
+    "image": "${AWS_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com/miratyper-training:latest",
+    "vcpus": 8,
+    "memory": 61440,
+    "linuxParameters": {
+      "sharedMemorySize": 8192  // Important: 8GB for PyTorch DataLoader workers
+    },
+    "jobRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/genept-training-job-role",
+    "volumes": [
+      {"name": "data", "host": {"sourcePath": "/data"}},
+      {"name": "scratch", "host": {"sourcePath": "/scratch"}}
+    ],
+    "mountPoints": [
+      {"sourceVolume": "data", "containerPath": "/data", "readOnly": true},
+      {"sourceVolume": "scratch", "containerPath": "/scratch", "readOnly": false}
+    ],
+    "command": [
+      "--tuning-config", "Ref::tuning_config",
+      "--wandb-project", "Ref::wandb_project",
+      "--local-data-dir", "/data/GenePT-tools/data/cellxgene_embeddings/training_v1_shuffled",
+      "--checkpoint-dir", "/tmp/checkpoints"
+    ]
+  }
+}
+```
+
+**Important Notes:**
+- **Shared Memory**: The `sharedMemorySize` parameter allocates memory for `/dev/shm`, crucial for PyTorch multi-worker data loading
+- **Default**: Without this setting, containers only get 64MB of shared memory, causing "Bus error" crashes
+- **Sizing**: Use 2-4GB per DataLoader worker (e.g., 8GB for 4 workers)
 
 ## Monitoring Jobs
 
-### Real-time Monitoring
-
-The submit script monitors jobs by default:
+### 1. Check Job Status
 ```bash
-python submit_job.py --job-name my-job
-# Shows live status and logs
+# Get job status
+aws batch describe-jobs \
+  --jobs JOB_ID \
+  --region us-west-2 \
+  --profile memverge \
+  --query "jobs[0].{Status:status,StartedAt:startedAt,StatusReason:statusReason}"
 ```
 
-### Check Job Status
+### 2. View Logs via AWS Console
+- Navigate to: https://us-west-2.console.aws.amazon.com/batch/
+- Click on your job ID
+- Select the "Logs" tab
 
+### 3. Stream Logs via CLI
 ```bash
-aws batch describe-jobs --jobs JOB_ID
+# Get log stream name
+LOG_STREAM=$(aws batch describe-jobs \
+  --jobs JOB_ID \
+  --region us-west-2 \
+  --profile memverge \
+  --query "jobs[0].container.logStreamName" \
+  --output text)
+
+# Tail logs
+aws logs tail /aws/batch/job --follow \
+  --log-stream-names $LOG_STREAM \
+  --profile memverge \
+  --region us-west-2
 ```
 
-### View Logs
-
+### 4. Use Monitoring Script
 ```bash
-# Stream logs
-aws logs tail /aws/batch/genept-training --follow
-
-# Get specific job logs
-aws logs get-log-events \
-    --log-group-name /aws/batch/genept-training \
-    --log-stream-name training/genept-training-job/JOB_ID
+./scripts/monitor_job.sh JOB_ID
 ```
 
-### WandB Dashboard
+### 5. WandB Dashboard
+- Visit https://wandb.ai
+- Navigate to your project (e.g., `memverge-tuning-test`)
+- View real-time training metrics and hyperparameter comparisons
 
-Training metrics and model artifacts are automatically logged to WandB:
-- Project: `genept-training` (or custom via --wandb-project)
-- View at: https://wandb.ai/YOUR_USERNAME/genept-training
+## Setting Up New MemVerge Queues
 
-## Cost Optimization
+### 1. Create Launch Template
+```bash
+# Create launch template with user data for MemVerge
+aws ec2 create-launch-template \
+  --launch-template-name "genept-memverge-template" \
+  --launch-template-data '{
+    "ImageId": "ami-0c94755bb95c71c0a",
+    "BlockDeviceMappings": [
+      {
+        "DeviceName": "/dev/xvda",
+        "Ebs": {"VolumeSize": 100, "VolumeType": "gp3"}
+      },
+      {
+        "DeviceName": "/dev/xvdb",
+        "Ebs": {"SnapshotId": "snap-09a79b0190b9df72e", "VolumeType": "gp3"}
+      }
+    ],
+    "UserData": "'"$(base64 -w 0 user_data.sh)"'"
+  }' \
+  --region us-west-2 \
+  --profile memverge
+```
 
-The setup uses several cost optimization strategies:
+### 2. Create Compute Environment
+```bash
+aws batch create-compute-environment \
+  --compute-environment-name "my-memverge-compute" \
+  --type MANAGED \
+  --state ENABLED \
+  --service-role "arn:aws:iam::${AWS_ACCOUNT_ID}:role/aws-batch-service-role" \
+  --compute-resources '{
+    "type": "EC2",
+    "minvCpus": 0,
+    "maxvCpus": 256,
+    "desiredvCpus": 0,
+    "instanceTypes": ["g5.2xlarge", "g5.4xlarge", "g5.8xlarge"],
+    "subnets": ["subnet-xxxxxx", "subnet-yyyyyy"],
+    "securityGroupIds": ["sg-xxxxxx"],
+    "instanceRole": "arn:aws:iam::${AWS_ACCOUNT_ID}:instance-profile/ecsInstanceRole",
+    "launchTemplate": {
+      "launchTemplateName": "genept-memverge-template",
+      "version": "$Latest"
+    },
+    "tags": {
+      "Name": "memverge-instance",
+      "Environment": "training"
+    }
+  }' \
+  --region us-west-2 \
+  --profile memverge
+```
 
-1. **Spot Instances**: 70% discount on GPU instances
-2. **Auto-scaling**: Scales to 0 when no jobs are running
-3. **Data Snapshot**: Eliminates repeated data transfer costs
-4. **Ephemeral Storage**: Uses instance storage for temporary files
+### 3. Create Job Queue
+```bash
+aws batch create-job-queue \
+  --job-queue-name "my-memverge-queue" \
+  --state ENABLED \
+  --priority 1 \
+  --compute-environment-order order=1,computeEnvironment=my-memverge-compute \
+  --region us-west-2 \
+  --profile memverge
+```
 
-Estimated costs:
-- p3.2xlarge spot: ~$0.92/hour (vs $3.06/hour on-demand)
-- EBS snapshot storage: ~$0.05/GB/month
-- S3 storage: ~$0.023/GB/month
+### 4. Instance Type Selection
+
+| Instance Type | GPUs | GPU Memory | vCPUs | RAM | Use Case |
+|--------------|------|------------|-------|-----|----------|
+| g5.2xlarge | 1x A10G | 24 GB | 8 | 32 GB | Small models, testing |
+| g5.4xlarge | 1x A10G | 24 GB | 16 | 64 GB | Medium training jobs |
+| g5.8xlarge | 1x A10G | 24 GB | 32 | 128 GB | Large batch processing |
+| g5.12xlarge | 4x A10G | 96 GB | 48 | 192 GB | Multi-GPU training |
+
+### 5. Customize for Specific Workloads
+
+#### For Memory-Intensive Tasks:
+- Use larger instance types (g5.8xlarge+)
+- Increase container memory limits
+- Mount additional EBS volumes
+
+#### For Checkpoint/Restore:
+- Configure frequent checkpointing in training config
+- Ensure `/scratch` is writable for checkpoint storage
+- Set appropriate checkpoint intervals (e.g., every 50 batches)
 
 ## Troubleshooting
 
-### Job Stuck in RUNNABLE
+### Common Errors and Fixes
 
-Check compute environment capacity:
-```bash
-aws batch describe-compute-environments --compute-environments genept-training-gpu-env
+#### 1. S3 Access Denied
+**Error**: `AccessDenied when calling the ListObjectsV2 operation`
+
+**Cause**: Cross-account S3 bucket access or missing permissions
+
+**Fix**:
+- If bucket is in different account, copy data to your account's bucket
+- Or update IAM role with explicit S3 permissions:
+```json
+{
+  "Effect": "Allow",
+  "Action": ["s3:GetObject", "s3:ListBucket"],
+  "Resource": [
+    "arn:aws:s3:::bucket-name",
+    "arn:aws:s3:::bucket-name/*"
+  ]
+}
 ```
 
-### Out of Memory Errors
+#### 2. Read-only Filesystem
+**Error**: `OSError: [Errno 30] Read-only file system: '/data'`
 
-Increase memory in job definition or use larger instance type.
+**Cause**: Trying to write to read-only mounted volume
 
-### Permission Errors
-
-Verify IAM roles:
-```bash
-aws iam get-role --role-name genept-training-job-role
-aws iam get-role-policy --role-name genept-training-job-role --policy-name genept-training-job-policy
+**Fix**:
+- Use `/tmp` or `/scratch` for writable storage
+- Update mount points in job definition:
+```json
+"mountPoints": [
+  {"sourceVolume": "data", "containerPath": "/data", "readOnly": true},
+  {"sourceVolume": "scratch", "containerPath": "/scratch", "readOnly": false}
+]
 ```
 
-### Data Volume Not Mounting
+#### 3. Profile Not Found
+**Error**: `ProfileNotFound: The config profile (xcellerate) could not be found`
 
-Check launch template and user data script:
+**Cause**: Hardcoded AWS profile in code
+
+**Fix**:
+- Pass `--aws-profile none` to use ECS task role credentials
+- Or set profile to empty string in config
+
+#### 4. Invalid Compute Environment
+**Error**: `CLIENT_ERROR - subnet-xxxxx does not exist`
+
+**Cause**: Incorrect subnet IDs or missing permissions
+
+**Fix**:
 ```bash
-aws ec2 describe-launch-template-versions --launch-template-name genept-training-gpu-template
+# List available subnets
+aws ec2 describe-subnets --region us-west-2 --profile memverge
+
+# List security groups
+aws ec2 describe-security-groups --region us-west-2 --profile memverge
 ```
 
-## Next Steps (Phase 2 & 3)
+#### 5. Missing Instance Profile
+**Error**: `Instance profile arn:aws:iam::xxx:instance-profile/xxx does not exist`
 
-### Phase 2: Parameterization
-- [ ] Add support for hyperparameter tuning configs
-- [ ] Implement job arrays for parallel experiments
-- [ ] Add resume from checkpoint capability
+**Fix**:
+```bash
+# List available instance profiles
+aws iam list-instance-profiles --profile memverge
 
-### Phase 3: Production Features
-- [ ] Set up monitoring dashboards
-- [ ] Add automatic retry logic
-- [ ] Implement cost tracking
-- [ ] Add model registry integration
+# Use the Batch-managed instance profile
+```
 
-## Security Considerations
+#### 6. DataLoader Shared Memory Error
+**Error**: `DataLoader worker (pid X) is killed by signal: Bus error`
 
-1. **Secrets**: WandB API key stored in AWS Secrets Manager
-2. **Network**: Consider using VPC endpoints for S3 access
-3. **IAM**: Roles follow least privilege principle
-4. **Encryption**: Enable S3 bucket encryption for outputs
+**Cause**: PyTorch DataLoader workers run out of shared memory in container
 
-## Support
+**Fix**:
+Add `linuxParameters` to job definition to increase shared memory:
+```json
+"containerProperties": {
+  "linuxParameters": {
+    "sharedMemorySize": 8192  // 8GB of shared memory
+  },
+  // ... rest of container properties
+}
+```
 
-For issues or questions:
-1. Check CloudWatch logs for error details
-2. Verify all IAM permissions are correctly configured
-3. Ensure the data snapshot is accessible in your region
+Or use container overrides when submitting:
+```bash
+aws batch submit-job \
+  --job-name "my-job" \
+  --job-queue "queue-name" \
+  --job-definition "job-def" \
+  --container-overrides '{"linuxParameters":{"sharedMemorySize":16384}}' \
+  --region us-west-2 \
+  --profile memverge
+```
+
+Alternative: Set `num_workers: 0` in config to disable multiprocessing (slower but avoids shared memory issues)
+
+### Debugging Tools
+
+#### 1. Filesystem Debug Script
+Use to explore container filesystem and find data:
+```bash
+# Create debug job definition
+aws batch register-job-definition \
+  --cli-input-json file://job_definition_debug.json \
+  --region us-west-2 \
+  --profile memverge
+
+# Submit debug job
+aws batch submit-job \
+  --job-name "debug-filesystem" \
+  --job-queue "miratyper-memverge-queue" \
+  --job-definition "genept-debug-filesystem" \
+  --region us-west-2 \
+  --profile memverge
+```
+
+#### 2. Check Volume Mounts
+Verify volumes are correctly mounted:
+```bash
+# In debug container or via job overrides
+df -h
+mount | grep -E "(data|scratch)"
+ls -la /data /scratch
+```
+
+#### 3. Verify Data Paths
+Common data locations to check:
+```bash
+# Check for training data (case sensitive!)
+ls -la /data/GenePT-tools/data/cellxgene_embeddings/
+ls -la /data/GenePT-tools/data/  # Note: lowercase 't' in tools
+
+# Check for test data
+ls -la /data/GenePT-tools/data/cellxgene_embeddings/test_v1/
+
+# Find any .pt or .parquet files
+find /data -name "*.pt" -o -name "*.parquet" | head -20
+```
+
+#### 4. Test S3 Access
+Verify the container can access S3:
+```bash
+# Test with AWS CLI in container
+aws s3 ls s3://miratyper-training-configs/ --region us-west-2
+
+# Test with boto3
+python -c "import boto3; s3 = boto3.client('s3'); print(s3.list_buckets())"
+```
+
+## Tips
+
+1. **Always use lowercase paths**: Linux is case-sensitive (`GenePT-tools` not `GenePT-Tools`)
+2. **Check instance status**: Ensure compute environment is VALID before submitting jobs
+3. **Monitor costs**: Use spot instances when possible for cost savings
+4. **Checkpoint frequently**: For resilience against spot interruptions
+5. **Use debug jobs**: When in doubt, submit a debug job to explore the environment

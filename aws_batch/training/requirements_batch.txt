@@ -27,5 +27,13 @@ tqdm>=4.65.0
 pyyaml>=6.0
 python-dotenv>=1.0.0
 
+# Hyperparameter tuning
+optuna>=3.3.0
+
+# Cell Ontology support for hierarchical metrics
+pronto>=2.5.0
+networkx>=3.1
+obonet>=1.0.0
+
 # AWS
 boto3>=1.26.0

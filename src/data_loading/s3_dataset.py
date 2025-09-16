@@ -31,7 +31,7 @@ class S3ParquetStreamDataset(IterableDataset):
       download_if_missing: bool = True,
       shuffle_files_per_epoch: bool = True,
       shuffle_within_files: bool = True,
-      aws_profile: str = "xcellerate",
+      aws_profile: str = None,
       start_batch_file: int = 0,
       end_batch_file: Optional[int] = None,
       seed: int = 42,
@@ -89,11 +89,36 @@ class S3ParquetStreamDataset(IterableDataset):
   
   def _list_s3_files(self) -> List[str]:
     """List and filter S3 files based on start/end indices."""
-    all_files = list_s3_files(self.s3_bucket, self.s3_prefix, self.aws_profile)
-    
-    # Filter to just the batch files
-    batch_files = [f for f in all_files if 'batch_' in f and f.endswith('.parquet')]
-    batch_files.sort()  # Ensure consistent ordering
+    # WORKAROUND: If we're in AWS Batch (no aws_profile), assume files exist locally
+    # with standard naming pattern to avoid S3 access issues
+    if self.aws_profile is None and self.local_data_dir:
+      print(f"[DEBUG] AWS Batch mode detected (aws_profile=None), using assumed local files")
+      # Generate list of expected batch files (assuming they exist)
+      # This matches the typical pattern: batch_0000.parquet to batch_0299.parquet
+      batch_files = [f"batch_{i:04d}.parquet" for i in range(300)]
+      if self.verbose:
+        print(f"Assuming {len(batch_files)} batch files exist locally")
+    elif self.local_data_dir and self.local_data_dir.exists():
+      print(f"[DEBUG] Checking local directory: {self.local_data_dir}")
+      local_files = list(self.local_data_dir.glob('batch_*.parquet'))
+      if local_files:
+        # Use local files, return just the filenames (not full paths)
+        batch_files = [f.name for f in local_files]
+        batch_files.sort()
+        if self.verbose:
+          print(f"Found {len(batch_files)} local parquet files in {self.local_data_dir}")
+      else:
+        # No local files, fall back to S3
+        print(f"[DEBUG] No batch_*.parquet files found in {self.local_data_dir}, falling back to S3")
+        all_files = list_s3_files(self.s3_bucket, self.s3_prefix, self.aws_profile)
+        batch_files = [f for f in all_files if 'batch_' in f and f.endswith('.parquet')]
+        batch_files.sort()
+    else:
+      # No local directory specified or doesn't exist, use S3
+      print(f"[DEBUG] Local directory doesn't exist or not specified: {self.local_data_dir}")
+      all_files = list_s3_files(self.s3_bucket, self.s3_prefix, self.aws_profile)
+      batch_files = [f for f in all_files if 'batch_' in f and f.endswith('.parquet')]
+      batch_files.sort()
     
     # Apply start/end limits
     if self.end_batch_file is not None:

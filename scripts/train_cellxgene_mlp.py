@@ -65,8 +65,8 @@ def parse_args():
   parser.add_argument(
     "--aws-profile",
     type=str,
-    default="xcellerate",
-    help="AWS profile to use for S3 access"
+    default=None,
+    help="AWS profile to use for S3 access (None for default credentials)"
   )
   parser.add_argument(
     "--download-if-missing",

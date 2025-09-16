@@ -1,0 +1,103 @@
+{
+  "jobDefinitionName": "genept-tuning-job",
+  "type": "container",
+  "platformCapabilities": ["EC2"],
+  "parameters": {
+    "tuning_config": "s3://miratyper-training-configs/tuning_config_memverge_test.yaml",
+    "wandb_project": "memverge-tuning-test"
+  },
+  "containerProperties": {
+    "image": "971422677163.dkr.ecr.us-west-2.amazonaws.com/miratyper-training:latest",
+    "vcpus": 8,
+    "memory": 32768,
+    "resourceRequirements": [
+      {
+        "type": "GPU",
+        "value": "1"
+      }
+    ],
+    "linuxParameters": {
+      "sharedMemorySize": 8192
+    },
+    "jobRoleArn": "arn:aws:iam::971422677163:role/genept-training-job-role",
+    "executionRoleArn": "arn:aws:iam::971422677163:role/genept-training-execution-role",
+    "volumes": [
+      {
+        "name": "data",
+        "host": {
+          "sourcePath": "/data"
+        }
+      },
+      {
+        "name": "scratch",
+        "host": {
+          "sourcePath": "/scratch"
+        }
+      }
+    ],
+    "mountPoints": [
+      {
+        "sourceVolume": "data",
+        "containerPath": "/data",
+        "readOnly": true
+      },
+      {
+        "sourceVolume": "scratch",
+        "containerPath": "/scratch",
+        "readOnly": false
+      }
+    ],
+    "environment": [
+      {
+        "name": "DATA_ROOT",
+        "value": "/data/GenePT-tools/data"
+      },
+      {
+        "name": "CHECKPOINT_DIR",
+        "value": "/tmp/checkpoints"
+      },
+      {
+        "name": "OUTPUT_DIR",
+        "value": "/tmp/outputs"
+      },
+      {
+        "name": "WANDB_DIR",
+        "value": "/tmp/wandb"
+      },
+      {
+        "name": "PYTHONUNBUFFERED",
+        "value": "1"
+      }
+    ],
+    "command": [
+      "--tuning-config",
+      "Ref::tuning_config",
+      "--wandb-project",
+      "Ref::wandb_project",
+      "--local-data-dir",
+      "/data/GenePT-tools/data/cellxgene_embeddings/training_v1_shuffled",
+      "--test-data-dir",
+      "/data/GenePT-tools/data/cellxgene_embeddings/test_v1",
+      "--checkpoint-dir",
+      "/tmp/checkpoints",
+      "--cell-types-file",
+      "s3://miratyper-training-configs/cell_types_filtered.csv",
+      "--enable-hierarchical-metrics",
+      "--aws-profile",
+      "none"
+    ],
+    "logConfiguration": {
+      "logDriver": "awslogs",
+      "options": {
+        "awslogs-group": "/aws/batch/job",
+        "awslogs-stream-prefix": "genept-tuning"
+      }
+    },
+    "secrets": [
+      {
+        "name": "WANDB_API_KEY",
+        "valueFrom": "arn:aws:secretsmanager:us-west-2:971422677163:secret:wandb-api-key-WjZfMv"
+      }
+    ]
+  }
+}

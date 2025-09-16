@@ -6,15 +6,21 @@ import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
 
 
-def get_s3_client(profile_name: str = "xcellerate"):
+def get_s3_client(profile_name: str = None):
   """Create an S3 client with the specified AWS profile.
   
   Args:
-    profile_name: AWS profile to use for credentials
+    profile_name: AWS profile to use for credentials. If None or empty string,
+                  uses default credentials (IAM role, environment vars, etc.)
     
   Returns:
     boto3 S3 client
   """
+  # If profile_name is None, empty string, or "none", use default credentials (e.g., ECS task role)
+  if not profile_name or profile_name.lower() == "none":
+    return boto3.client('s3')
+  
+  # Otherwise use the specified profile
   session = boto3.Session(profile_name=profile_name)
   return session.client('s3')
 
@@ -22,7 +28,7 @@ def get_s3_client(profile_name: str = "xcellerate"):
 def list_s3_files(
     bucket: str,
     prefix: str,
-    profile_name: str = "xcellerate"
+    profile_name: str = None
 ) -> List[str]:
   """List all files in an S3 bucket with given prefix.
   
@@ -58,7 +64,7 @@ def download_s3_file(
     bucket: str,
     s3_key: str,
     local_path: Path,
-    profile_name: str = "xcellerate"
+    profile_name: str = None
 ) -> Path:
   """Download a single file from S3.
   
@@ -112,7 +118,7 @@ def get_or_download_file(
     bucket: str,
     s3_prefix: str,
     download_if_missing: bool = True,
-    profile_name: str = "xcellerate"
+    profile_name: str = None
 ) -> Optional[Path]:
   """Get a file from local directory or download from S3 if needed.
   
