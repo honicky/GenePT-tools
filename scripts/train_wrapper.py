@@ -77,6 +77,10 @@ def main():
     # Get original arguments (skip script name)
     original_args = sys.argv[1:]
     
+    # If the first argument is 'python' and second is the script path, skip them
+    if len(original_args) >= 2 and original_args[0] == 'python' and 'train_wrapper.py' in original_args[1]:
+        original_args = original_args[2:]
+    
     print(f"Original arguments: {original_args}")
     
     # Process arguments and download S3 files

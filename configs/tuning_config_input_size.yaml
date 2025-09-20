@@ -4,18 +4,18 @@
 
 # Optuna Study Configuration
 optuna:
-  study_name: "cellxgene-dimension-tuning-2"
+  study_name: "cellxgene-dimension-tuning-3"
   direction: "maximize"  # F1 scores should be maximized!
   metric_to_optimize: "hierarchical_f1"
-  n_trials: 50  # Target 50 SUCCESSFUL trials (failed trials don't count)
-  n_epochs_per_trial: 2  # Train for 2 epochs per trial
+  n_trials: 100  # Target 100 SUCCESSFUL trials (failed trials don't count)
+  n_epochs_per_trial: 3  # Train for 2 epochs per trial
   ensure_successful_trials: true  # Default: true - Only count successful trials toward n_trials target
   
   # Advanced sampler with more startup trials
   sampler:
     type: "TPESampler"
     n_startup_trials: 20  # Reduced for testing (was 20)
-    seed: 42
+    seed: 142
   
   # Aggressive pruning to save compute
   pruner:
@@ -52,7 +52,7 @@ hyperparameters:
   
   learning_rate:
     type: "float"
-    low: 1e-4  # This is base LR for batch_size=1024
+    low: 1e-5  # This is base LR for batch_size=1024
     high: 5e-3  # Will be scaled based on batch size
     default: 0.001  # Updated default based on our successful tests
     log: true

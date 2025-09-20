@@ -75,7 +75,7 @@
       "--wandb-project",
       "Ref::wandb_project",
       "--local-data-dir",
-      "/data/GenePT-tools/data/cellxgene_embeddings/training_v1_shuffled",
+      "/data/GenePT-tools/data/cellxgene_embeddings/training_v1_shuffled_pt",
       "--test-data-dir",
       "/data/GenePT-tools/data/cellxgene_embeddings/test_v1",
       "--checkpoint-dir",
