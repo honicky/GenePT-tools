@@ -1,0 +1,67 @@
+{
+  "jobDefinitionName": "scgpt-embedding-generation",
+  "type": "container",
+  "parameters": {
+    "input_list": "s3://pythiomicsdata/cellxgene_v2/h5ad_file_list.json",
+    "model_path": "s3://pythiomicsdata/models/scgpt/whole_human",
+    "output_bucket": "pythiomicsdata",
+    "output_prefix": "cellxgene_v2/scgpt_embeddings_v2"
+  },
+  "containerProperties": {
+    "image": "971422677163.dkr.ecr.us-west-2.amazonaws.com/scgpt-embeddings:latest",
+    "vcpus": 8,
+    "memory": 32768,
+    "jobRoleArn": "arn:aws:iam::971422677163:role/ecsTaskExecutionRole",
+    "executionRoleArn": "arn:aws:iam::971422677163:role/ecsTaskExecutionRole",
+    "resourceRequirements": [
+      {
+        "type": "GPU",
+        "value": "1"
+      }
+    ],
+    "linuxParameters": {
+      "sharedMemorySize": 8192
+    },
+    "environment": [
+      {
+        "name": "PYTHONUNBUFFERED",
+        "value": "1"
+      },
+      {
+        "name": "CUDA_VISIBLE_DEVICES",
+        "value": "0"
+      }
+    ],
+    "mountPoints": [
+      {
+        "sourceVolume": "data",
+        "containerPath": "/data",
+        "readOnly": false
+      }
+    ],
+    "volumes": [
+      {
+        "name": "data",
+        "host": {
+          "sourcePath": "/mnt/efs/scgpt-data"
+        }
+      }
+    ],
+    "logConfiguration": {
+      "logDriver": "awslogs",
+      "options": {
+        "awslogs-group": "/aws/batch/scgpt-embeddings",
+        "awslogs-region": "us-west-2",
+        "awslogs-stream-prefix": "scgpt"
+      }
+    }
+  },
+  "platformCapabilities": ["EC2"],
+  "propagateTags": true,
+  "retryStrategy": {
+    "attempts": 2
+  },
+  "timeout": {
+    "attemptDurationSeconds": 86400
+  }
+}
