@@ -174,15 +174,25 @@ def test_incremental_processing(test_dir: Path):
     )
     extractor2.run()
     
-    # Add new batch
+    # Add new batch with corresponding scGPT embeddings
+    new_cell_ids = [f"cell_{i:04d}" for i in range(100, 150)]
     new_df = pd.DataFrame({
-        'cell_id': [f"cell_{i:04d}" for i in range(100, 150)],
+        'cell_id': new_cell_ids,
         'origin_file': ['file1.h5ad'] * 50,
         'cell_type': ['T cell'] * 50,
         'cell_type_code': [0] * 50,
         'embedding': [np.random.randn(3072).tolist() for _ in range(50)]
     })
     new_df.to_parquet(training_dir / 'batch_0001.parquet', index=False)
+    
+    # Also update the scGPT embeddings for file1 to include the new cells
+    existing_scgpt = pd.read_parquet(scgpt_dir / 'file1_scgpt.parquet')
+    new_scgpt_rows = pd.DataFrame({
+        'cell_id': new_cell_ids,
+        'scgpt_embedding': [np.random.randn(512).tolist() for _ in range(50)]
+    })
+    updated_scgpt = pd.concat([existing_scgpt, new_scgpt_rows], ignore_index=True)
+    updated_scgpt.to_parquet(scgpt_dir / 'file1_scgpt.parquet', index=False)
     
     # Third run (should process new batch only)
     extractor3 = ScGPTEmbeddingExtractor(

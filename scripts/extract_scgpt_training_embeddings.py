@@ -16,6 +16,7 @@ import hashlib
 import warnings
 
 import boto3
+import duckdb
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -180,9 +181,12 @@ class ScGPTEmbeddingExtractor:
             self.s3_client.upload_file(local_path, bucket, key)
             os.remove(local_path)
     
-    def inventory_training_data(self) -> Dict[str, Set[str]]:
+    def inventory_training_data(self, use_duckdb=True) -> Dict[str, Set[str]]:
         """
         Inventory all training batches and extract cell-origin mappings.
+        
+        Args:
+            use_duckdb: Use DuckDB for fast parquet querying (default: True)
         
         Returns:
             Dictionary mapping origin_file -> Set[cell_id]
@@ -218,24 +222,28 @@ class ScGPTEmbeddingExtractor:
         
         logger.info(f"Processing {len(batches_to_process)} batches...")
         
-        # Process batches
-        for batch_file in tqdm(batches_to_process, desc="Inventorying batches"):
-            df = self._read_parquet(batch_file)
-            
-            # Track batch info
-            batch_info = {
-                'file': batch_file,
-                'n_cells': len(df),
-                'cell_types': df['cell_type'].nunique() if 'cell_type' in df.columns else 0
-            }
-            all_batches_info.append(batch_info)
-            
-            # Build origin->cells mapping
-            if 'origin_file' in df.columns and 'cell_id' in df.columns:
-                for origin, cells in df.groupby('origin_file')['cell_id']:
-                    origin_to_cells[origin].update(cells.tolist())
-            else:
-                logger.warning(f"Batch {batch_file} missing origin_file or cell_id columns")
+        if use_duckdb and batches_to_process:
+            # Use DuckDB for fast inventory
+            origin_to_cells, all_batches_info = self._inventory_with_duckdb(batches_to_process)
+        else:
+            # Original pandas-based inventory
+            for batch_file in tqdm(batches_to_process, desc="Inventorying batches"):
+                df = self._read_parquet(batch_file)
+                
+                # Track batch info
+                batch_info = {
+                    'file': batch_file,
+                    'n_cells': len(df),
+                    'cell_types': df['cell_type'].nunique() if 'cell_type' in df.columns else 0
+                }
+                all_batches_info.append(batch_info)
+                
+                # Build origin->cells mapping
+                if 'origin_file' in df.columns and 'cell_id' in df.columns:
+                    for origin, cells in df.groupby('origin_file')['cell_id']:
+                        origin_to_cells[origin].update(cells.tolist())
+                else:
+                    logger.warning(f"Batch {batch_file} missing origin_file or cell_id columns")
         
         # Log statistics
         total_cells = sum(len(cells) for cells in origin_to_cells.values())
@@ -249,6 +257,94 @@ class ScGPTEmbeddingExtractor:
         self.stats['total_cells'] = total_cells
         
         return origin_to_cells, batches_to_process
+    
+    def _inventory_with_duckdb(self, batch_files: List[str]) -> Tuple[Dict[str, Set[str]], List[Dict]]:
+        """
+        Use DuckDB to quickly inventory parquet files.
+        
+        Args:
+            batch_files: List of parquet file paths
+            
+        Returns:
+            Tuple of (origin_to_cells mapping, batch info list)
+        """
+        logger.info("Using DuckDB for fast inventory...")
+        origin_to_cells = defaultdict(set)
+        all_batches_info = []
+        
+        # Create DuckDB connection
+        conn = duckdb.connect(':memory:')
+        
+        try:
+            # Process files in chunks for memory efficiency
+            chunk_size = 50
+            for i in range(0, len(batch_files), chunk_size):
+                chunk_files = batch_files[i:i+chunk_size]
+                
+                # Create glob pattern or file list for DuckDB
+                if len(chunk_files) == 1:
+                    file_pattern = chunk_files[0]
+                else:
+                    # DuckDB can read multiple files with glob or list
+                    file_pattern = chunk_files
+                
+                # Query to get unique origin-cell pairs
+                query = f"""
+                    SELECT 
+                        origin_file,
+                        cell_id,
+                        COUNT(*) as count
+                    FROM read_parquet({file_pattern!r})
+                    GROUP BY origin_file, cell_id
+                """
+                
+                try:
+                    result_df = conn.execute(query).fetchdf()
+                    
+                    # Build origin->cells mapping
+                    for origin_file, group in result_df.groupby('origin_file'):
+                        origin_to_cells[origin_file].update(group['cell_id'].tolist())
+                    
+                    # Get batch statistics
+                    for batch_file in chunk_files:
+                        stats_query = f"""
+                            SELECT 
+                                COUNT(*) as n_cells,
+                                COUNT(DISTINCT cell_type) as n_cell_types
+                            FROM read_parquet({batch_file!r})
+                        """
+                        stats = conn.execute(stats_query).fetchone()
+                        batch_info = {
+                            'file': batch_file,
+                            'n_cells': stats[0],
+                            'cell_types': stats[1]
+                        }
+                        all_batches_info.append(batch_info)
+                        
+                except Exception as e:
+                    logger.warning(f"DuckDB query failed for chunk, falling back to pandas: {e}")
+                    # Fall back to pandas for this chunk
+                    for batch_file in chunk_files:
+                        df = self._read_parquet(batch_file)
+                        batch_info = {
+                            'file': batch_file,
+                            'n_cells': len(df),
+                            'cell_types': df['cell_type'].nunique() if 'cell_type' in df.columns else 0
+                        }
+                        all_batches_info.append(batch_info)
+                        
+                        if 'origin_file' in df.columns and 'cell_id' in df.columns:
+                            for origin, cells in df.groupby('origin_file')['cell_id']:
+                                origin_to_cells[origin].update(cells.tolist())
+                
+                # Log progress
+                processed = min(i + chunk_size, len(batch_files))
+                logger.info(f"Inventoried {processed}/{len(batch_files)} files...")
+        
+        finally:
+            conn.close()
+        
+        return dict(origin_to_cells), all_batches_info
     
     def load_scgpt_embeddings(self, origin_file: str) -> Optional[Dict[str, np.ndarray]]:
         """
@@ -524,7 +620,9 @@ class ScGPTEmbeddingExtractor:
         logger.info(f"Batches processed: {self.stats['processed_batches']}")
         logger.info(f"Cells processed: {self.stats['processed_cells']:,}")
         logger.info(f"Missing cells: {self.stats['missing_cells']:,}")
-        logger.info(f"Success rate: {self.stats['processed_cells']/(self.stats['processed_cells']+self.stats['missing_cells'])*100:.1f}%")
+        total_cells = self.stats['processed_cells'] + self.stats['missing_cells']
+        success_rate = self.stats['processed_cells'] / total_cells * 100 if total_cells > 0 else 100.0
+        logger.info(f"Success rate: {success_rate:.1f}%")
         logger.info("="*60)
     
     def _upload_to_s3(self):
