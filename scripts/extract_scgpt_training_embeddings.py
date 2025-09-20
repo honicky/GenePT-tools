@@ -238,12 +238,17 @@ class ScGPTEmbeddingExtractor:
                 }
                 all_batches_info.append(batch_info)
                 
-                # Build origin->cells mapping
+                # Detect column names and build origin->cells mapping
                 if 'origin_file' in df.columns and 'cell_id' in df.columns:
+                    # Test data format
                     for origin, cells in df.groupby('origin_file')['cell_id']:
                         origin_to_cells[origin].update(cells.tolist())
+                elif 'source_file' in df.columns and 'observation_joinid' in df.columns:
+                    # Real data format
+                    for origin, cells in df.groupby('source_file')['observation_joinid']:
+                        origin_to_cells[origin].update(cells.tolist())
                 else:
-                    logger.warning(f"Batch {batch_file} missing origin_file or cell_id columns")
+                    logger.warning(f"Batch {batch_file} missing expected column pairs (origin_file/cell_id or source_file/observation_joinid)")
         
         # Log statistics
         total_cells = sum(len(cells) for cells in origin_to_cells.values())
@@ -257,6 +262,30 @@ class ScGPTEmbeddingExtractor:
         self.stats['total_cells'] = total_cells
         
         return origin_to_cells, batches_to_process
+    
+    def _inventory_with_pandas(self, batch_files: List[str]) -> Tuple[Dict[str, Set[str]], List[Dict]]:
+        """Fallback pandas-based inventory when DuckDB fails."""
+        origin_to_cells = defaultdict(set)
+        all_batches_info = []
+        
+        for batch_file in batch_files:
+            df = self._read_parquet(batch_file)
+            batch_info = {
+                'file': batch_file,
+                'n_cells': len(df),
+                'cell_types': df['cell_type'].nunique() if 'cell_type' in df.columns else 0
+            }
+            all_batches_info.append(batch_info)
+            
+            # Detect column names
+            if 'origin_file' in df.columns and 'cell_id' in df.columns:
+                for origin, cells in df.groupby('origin_file')['cell_id']:
+                    origin_to_cells[origin].update(cells.tolist())
+            elif 'source_file' in df.columns and 'observation_joinid' in df.columns:
+                for origin, cells in df.groupby('source_file')['observation_joinid']:
+                    origin_to_cells[origin].update(cells.tolist())
+        
+        return dict(origin_to_cells), all_batches_info
     
     def _inventory_with_duckdb(self, batch_files: List[str]) -> Tuple[Dict[str, Set[str]], List[Dict]]:
         """
@@ -275,6 +304,26 @@ class ScGPTEmbeddingExtractor:
         # Create DuckDB connection
         conn = duckdb.connect(':memory:')
         
+        # First, detect column names from first file
+        first_file = batch_files[0]
+        detect_query = f"SELECT * FROM read_parquet({first_file!r}) LIMIT 1"
+        sample_df = conn.execute(detect_query).fetchdf()
+        
+        # Determine column names based on what exists
+        if 'origin_file' in sample_df.columns:
+            origin_col = 'origin_file'
+            cell_col = 'cell_id'
+        elif 'source_file' in sample_df.columns:
+            origin_col = 'source_file'
+            cell_col = 'observation_joinid'
+        else:
+            # Fall back to pandas if we can't determine columns
+            logger.warning("Could not determine column names, falling back to pandas")
+            conn.close()
+            return self._inventory_with_pandas(batch_files)
+        
+        logger.info(f"Detected columns: origin={origin_col}, cell={cell_col}")
+        
         try:
             # Process files in chunks for memory efficiency
             chunk_size = 50
@@ -291,11 +340,11 @@ class ScGPTEmbeddingExtractor:
                 # Query to get unique origin-cell pairs
                 query = f"""
                     SELECT 
-                        origin_file,
-                        cell_id,
+                        {origin_col} as origin_file,
+                        {cell_col} as cell_id,
                         COUNT(*) as count
                     FROM read_parquet({file_pattern!r})
-                    GROUP BY origin_file, cell_id
+                    GROUP BY {origin_col}, {cell_col}
                 """
                 
                 try:
@@ -333,8 +382,16 @@ class ScGPTEmbeddingExtractor:
                         }
                         all_batches_info.append(batch_info)
                         
+                        # Detect column names
                         if 'origin_file' in df.columns and 'cell_id' in df.columns:
-                            for origin, cells in df.groupby('origin_file')['cell_id']:
+                            origin_col_pd, cell_col_pd = 'origin_file', 'cell_id'
+                        elif 'source_file' in df.columns and 'observation_joinid' in df.columns:
+                            origin_col_pd, cell_col_pd = 'source_file', 'observation_joinid'
+                        else:
+                            origin_col_pd, cell_col_pd = None, None
+                            
+                        if origin_col_pd and cell_col_pd:
+                            for origin, cells in df.groupby(origin_col_pd)[cell_col_pd]:
                                 origin_to_cells[origin].update(cells.tolist())
                 
                 # Log progress
@@ -470,13 +527,24 @@ class ScGPTEmbeddingExtractor:
             df = self._read_parquet(batch_file)
             n_cells = len(df)
             
+            # Detect column names
+            if 'origin_file' in df.columns and 'cell_id' in df.columns:
+                origin_col = 'origin_file'
+                cell_col = 'cell_id'
+            elif 'source_file' in df.columns and 'observation_joinid' in df.columns:
+                origin_col = 'source_file'
+                cell_col = 'observation_joinid'
+            else:
+                logger.error(f"Batch {batch_name}: Cannot find expected columns")
+                return None
+            
             # Extract scGPT embeddings for each cell
             scgpt_embeddings = []
             missing_cells = []
             
             for _, row in df.iterrows():
-                origin_file = row['origin_file']
-                cell_id = row['cell_id']
+                origin_file = row[origin_col]
+                cell_id = row[cell_col]
                 
                 if origin_file not in origin_embeddings:
                     missing_cells.append((origin_file, cell_id))
@@ -502,13 +570,13 @@ class ScGPTEmbeddingExtractor:
                 logger.error(f"Batch {batch_name}: No valid scGPT embeddings found!")
                 return None
             
-            # Create output DataFrame
+            # Create output DataFrame with standardized column names
             output_df = pd.DataFrame({
-                'cell_id': df.iloc[valid_indices]['cell_id'].values,
-                'origin_file': df.iloc[valid_indices]['origin_file'].values,
+                'cell_id': df.iloc[valid_indices][cell_col].values,
+                'origin_file': df.iloc[valid_indices][origin_col].values,
                 'scgpt_embedding': [scgpt_embeddings[i] for i in valid_indices],
-                'cell_type': df.iloc[valid_indices]['cell_type'].values,
-                'cell_type_code': df.iloc[valid_indices]['cell_type_code'].values
+                'cell_type': df.iloc[valid_indices]['cell_type'].values if 'cell_type' in df.columns else ['unknown'] * len(valid_indices),
+                'cell_type_code': df.iloc[valid_indices]['cell_type_code'].values if 'cell_type_code' in df.columns else [0] * len(valid_indices)
             })
             
             # Create output directory structure
