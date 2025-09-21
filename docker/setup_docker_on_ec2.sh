@@ -35,20 +35,10 @@ cat << 'EOF' | sudo tee /etc/docker/daemon.json
 {
     "data-root": "/data/docker",
     "storage-driver": "overlay2",
-    "storage-opts": [
-        "overlay2.override_kernel_check=true"
-    ],
     "log-driver": "json-file",
     "log-opts": {
         "max-size": "10m",
         "max-file": "3"
-    },
-    "default-runtime": "nvidia",
-    "runtimes": {
-        "nvidia": {
-            "path": "nvidia-container-runtime",
-            "runtimeArgs": []
-        }
     }
 }
 EOF

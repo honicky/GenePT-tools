@@ -21,25 +21,26 @@ cd GenePT-tools
 git checkout feature/scgpt-embedding-generation
 ```
 
-## Step 3: Build Docker Image (First Time Only)
+## Step 3: Setup Docker Storage (First Time Only)
+
+If your EC2 instance has limited root filesystem space:
+```bash
+# Move Docker to /data volume (recommended for EC2)
+sudo ./docker/setup_docker_on_ec2.sh
+```
+
+## Step 4: Build Docker Image
 
 ```bash
-# Build the Docker image using the build script
+# Build the Docker image
 chmod +x docker/scgpt/build.sh
 ./docker/scgpt/build.sh
-
-# Or manually copy files and build
-cp scripts/generate_scgpt_embeddings.py docker/scgpt/
-cp scripts/scgpt_wrapper.py docker/scgpt/
-cd docker/scgpt
-docker build -t scgpt-embeddings .
-rm generate_scgpt_embeddings.py scgpt_wrapper.py
 
 # Tag for ECR (optional, if you want to push to registry)
 docker tag scgpt-embeddings:latest 971422677163.dkr.ecr.us-west-2.amazonaws.com/scgpt-embeddings:latest
 ```
 
-## Step 4: Prepare Test Data
+## Step 5: Prepare Test Data
 
 Create a small file list for testing:
 
@@ -57,7 +58,7 @@ cat > /data/scgpt/test_files.json << 'EOF'
 EOF
 ```
 
-## Step 5: Run with Docker (Simple Method)
+## Step 6: Run with Docker (Simple Method)
 
 ```bash
 # Make the script executable
@@ -67,7 +68,7 @@ chmod +x aws_batch/scgpt/run_on_ec2.sh
 ./aws_batch/scgpt/run_on_ec2.sh
 ```
 
-## Step 6: Run with Docker (Manual Method)
+## Step 7: Run with Docker (Manual Method)
 
 If you prefer to run manually or need custom settings:
 
@@ -96,7 +97,7 @@ docker run --rm \
         --device cuda
 ```
 
-## Step 7: Monitor Progress
+## Step 8: Monitor Progress
 
 ```bash
 # Watch Docker logs in real-time
@@ -109,7 +110,7 @@ nvidia-smi -l 1
 ls -la /data/scgpt/output/
 ```
 
-## Step 8: Verify Results
+## Step 9: Verify Results
 
 ```bash
 # Check S3 output
