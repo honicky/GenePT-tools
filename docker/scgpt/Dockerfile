@@ -1,7 +1,7 @@
 # Dockerfile for scGPT embedding generation
-# Based on PyTorch with CUDA support for GPU inference
+# Based on PyTorch with CUDA development support for building flash-attn
 
-FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
+FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-devel
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -25,8 +25,11 @@ RUN pip install --no-cache-dir \
     pyarrow \
     tqdm \
     boto3 \
-    duckdb \
-    "flash-attn<1.0.5"
+    duckdb
+
+# Install flash-attn with CUDA support
+# The devel image includes nvcc and CUDA headers needed for compilation
+RUN pip install --no-cache-dir "flash-attn<1.0.5"
 
 # Install scGPT from GitHub
 RUN git clone https://github.com/bowang-lab/scGPT.git /tmp/scGPT && \
