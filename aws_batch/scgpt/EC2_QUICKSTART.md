@@ -24,9 +24,16 @@ git checkout feature/scgpt-embedding-generation
 ## Step 3: Build Docker Image (First Time Only)
 
 ```bash
-# Build the Docker image
+# Build the Docker image using the build script
+chmod +x docker/scgpt/build.sh
+./docker/scgpt/build.sh
+
+# Or manually copy files and build
+cp scripts/generate_scgpt_embeddings.py docker/scgpt/
+cp scripts/scgpt_wrapper.py docker/scgpt/
 cd docker/scgpt
 docker build -t scgpt-embeddings .
+rm generate_scgpt_embeddings.py scgpt_wrapper.py
 
 # Tag for ECR (optional, if you want to push to registry)
 docker tag scgpt-embeddings:latest 971422677163.dkr.ecr.us-west-2.amazonaws.com/scgpt-embeddings:latest

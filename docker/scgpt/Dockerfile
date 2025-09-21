@@ -37,9 +37,9 @@ RUN git clone https://github.com/bowang-lab/scGPT.git /tmp/scGPT && \
 # Create directories for data and models
 RUN mkdir -p /data /models /output
 
-# Copy our scripts (will be added later)
-COPY scripts/generate_scgpt_embeddings.py /app/
-COPY scripts/scgpt_wrapper.py /app/
+# Copy our scripts (these will be copied to docker/scgpt/ before build)
+COPY generate_scgpt_embeddings.py /app/
+COPY scgpt_wrapper.py /app/
 
 # Set environment variables
 ENV PYTHONPATH=/app:$PYTHONPATH
