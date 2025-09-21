@@ -14,10 +14,15 @@ echo "Copying scripts to build context..."
 cp "$REPO_ROOT/scripts/generate_scgpt_embeddings.py" "$SCRIPT_DIR/"
 cp "$REPO_ROOT/scripts/scgpt_wrapper.py" "$SCRIPT_DIR/"
 
-# Build Docker image
-echo "Building Docker image..."
-cd "$SCRIPT_DIR"
-docker build -t scgpt-embeddings .
+# Check if we should use the cache build script (if /data exists and has space)
+if [ -d "/data" ] && [ $(df /data | awk 'NR==2 {print int($4/1024/1024)}') -gt 10 ]; then
+    echo "Using build_with_cache.sh for building on /data..."
+    "$REPO_ROOT/docker/build_with_cache.sh" "$SCRIPT_DIR" "scgpt-embeddings"
+else
+    echo "Building Docker image with standard docker build..."
+    cd "$SCRIPT_DIR"
+    docker build -t scgpt-embeddings .
+fi
 
 # Clean up copied files
 echo "Cleaning up..."
