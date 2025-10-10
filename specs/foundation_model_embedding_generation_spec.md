@@ -1,10 +1,10 @@
 # Foundation Model Embedding Generation Specification
 
 ## Overview
-Generate cell embeddings using scGPT and Transcriptformer foundation models for all Tabula Sapiens v2 Curated Benchmark datasets. These embeddings will be used for downstream cell type classification and benchmarking.
+Generate cell embeddings using scGPT and Transcriptformer foundation models for 5 key Tabula Sapiens v2 Curated Benchmark tissues. These embeddings will be used for downstream cell type classification and benchmarking.
 
 ## Objectives
-1. Process all 26 tissue datasets from Tabula Sapiens v2
+1. Process 5 selected tissue datasets from Tabula Sapiens v2
 2. Generate embeddings using scGPT (zero-shot mode)
 3. Generate embeddings using Transcriptformer
 4. Save embeddings in efficient format for downstream analysis
@@ -15,21 +15,43 @@ Generate cell embeddings using scGPT and Transcriptformer foundation models for 
 ### Input Datasets
 - **Location**: `/Users/rj/personal/Tabula_Sapiens_v2_Curated_Benchmark/`
 - **Format**: H5AD files with standardized structure
-- **Count**: 26 tissue types
+- **Count**: 5 tissue types
 - **Key Fields**:
   - `X_original`: Raw count matrix
   - `obs['cell_type']`: Cell type annotations
   - `obs['donor_id']`: Donor identifiers
-  - `var['ensembl_id']`: Ensembl gene IDs
-  - `var['feature_name']`: Gene symbols
-
+  - `var['feature_name']`: Gene symbols in mixed format (SYMBOL_ENSGID)
+  
 ### Tissues to Process
-All H5AD files in the directory, including but not limited to:
-- Blood, Bone_Marrow, Lung, Mammary, Thymus
-- Brain_Vasculature, Colon, Eye, Fat, Heart
-- Kidney, Large_Intestine, Liver, Lymph_Node, Muscle
-- Pancreas, Prostate, Salivary_Gland, Skin, Small_Intestine
-- Spleen, Stomach, Tongue, Trachea, Uterus, Vasculature
+```python
+tissues_to_evaluate = ["Blood", "Bone_Marrow", "Lung", "Mammary", "Thymus"]
+
+def extract_tissue_name(filepath):
+    """Extract tissue name from Tabula Sapiens v2 filename."""
+    stem = filepath.stem
+    # Remove the known prefix
+    tissue_part = stem.replace('homo_sapiens_10df7690-6d10-4029-a47e-0f071bb2df83_', '')
+    # Remove the known suffix
+    tissue_name = tissue_part.replace('_v2_curated', '')
+    return tissue_name
+```
+
+### Gene Name Processing
+- **Input Format**: Mixed format in `var['feature_name']`: "SYMBOL_ENSGID" (e.g., "CD3E_ENSG00000198851")
+- **Required Cleaning**: Extract symbol portion before "_ENSG"
+```python
+def get_clean_gene_symbols(adata):
+    """Extract clean gene symbols from feature_name column."""
+    feature_names = adata.var['feature_name'].tolist()
+    clean_genes = []
+    for gene in feature_names:
+        if '_ENSG' in gene:
+            symbol = gene.split('_ENSG')[0]
+            clean_genes.append(symbol.upper())
+        elif not gene.startswith('ENSG'):
+            clean_genes.append(gene.upper())
+    return clean_genes
+```
 
 ## Model Specifications
 
