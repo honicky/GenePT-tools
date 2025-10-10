@@ -1,0 +1,23 @@
+# Transcriptformer requirements - Python 3.11+
+# PyTorch for CPU (will use MPS on macOS)
+torch>=2.5.1
+torchvision>=0.20.1
+torchaudio>=2.5.1
+
+# Transformers and acceleration
+transformers>=4.40.0
+accelerate>=0.30.0
+
+# Scientific computing
+scanpy>=1.10.3
+anndata>=0.10.9
+pandas>=2.2.3
+numpy>=1.26.4
+scikit-learn>=1.5.2
+scipy>=1.14.1
+
+# Utilities
+tqdm
+pyarrow>=10.0.0
+python-dotenv>=1.1.0
+ipykernel

@@ -2,6 +2,7 @@
 name = "genept-tools"
 version = "0.1.0"
 description = "Your project description"
+requires-python = ">=3.10"
 dependencies = [
     "anndata",
     "anndata-metadata>=0.1.2",
@@ -24,7 +25,7 @@ dependencies = [
     "s3fs>=0.4.2",
     "scanpy",
     "scikit-learn",
-    "torch>=2.4.0",
+    "torch>=2.1.2",
     "umap-learn",
     "wandb>=0.20.1",
     "xgboost>=3.0.1",
@@ -46,7 +47,6 @@ dev = [
     "pytest-env",
     "pytest-xdist",
     "ruff",
-    "torch==2.4.0",
     "yapf==0.40.2",
 ]
 
