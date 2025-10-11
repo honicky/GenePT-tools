@@ -233,7 +233,9 @@ After vocabulary analysis confirms acceptable coverage:
 
 ### Step 1: Environment Setup
 
-Due to conflicting Python version requirements (scGPT uses Python 3.10 with torch 2.1.2, Transcriptformer requires Python ≥3.11 with torch 2.5.1), we use separate virtual environments managed through dependency groups:
+Due to conflicting Python version requirements (scGPT uses Python 3.10 with torch 2.1.2, Transcriptformer requires Python ≥3.11 with torch 2.5.1), we use separate virtual environments:
+
+**Note**: The dependency groups approach was replaced with separate requirements files due to conflicts.
 
 #### Configure pyproject.toml
 
@@ -297,17 +299,26 @@ torchvision = [
 
 #### Create Separate Environments
 
+**Actual Implementation Approach:**
+
 ```bash
 # Create Python 3.10 environment for scGPT
 uv venv -p 3.10 .venv-scgpt
 
-# Create Python 3.11 environment for Transcriptformer
+# Create Python 3.11 environment for Transcriptformer  
 uv venv -p 3.11 .venv-transcriptformer
 
-# Sync dependencies for each environment
-UV_PROJECT_ENVIRONMENT=.venv-scgpt uv sync --group scgpt
-UV_PROJECT_ENVIRONMENT=.venv-transcriptformer uv sync --group transcriptformer
+# Install dependencies using requirements files (preferred over dependency groups)
+source .venv-scgpt/bin/activate && uv pip install -r requirements-scgpt.txt
+source .venv-transcriptformer/bin/activate && uv pip install -r requirements-transcriptformer.txt
+
+# Install scGPT package directly
+source .venv-scgpt/bin/activate && uv pip install scgpt
 ```
+
+**Helper Scripts Created:**
+- `scripts/run_scgpt.sh` - Activates scGPT environment and runs commands
+- `scripts/run_transcriptformer.sh` - Activates Transcriptformer environment and runs commands
 
 ### Step 2: Model Download
 ```python
@@ -339,12 +350,29 @@ Run each model separately to avoid memory issues and maintain clarity:
 
 #### Generate scGPT Embeddings
 
-Create `scripts/generate_scgpt_embeddings.py`:
+**Actual Implementation Notes:**
+
+1. **Use Official scGPT API**: The `scg.tasks.embed_data()` function handles most complexity
+2. **Required Model Files**:
+   - `best_model.pt` (checkpoint, ~205MB)
+   - `args.json` (model configuration)
+   - `vocab.json` (gene vocabulary, 60,697 genes)
+
+3. **macOS Compatibility Fixes Required**:
+   - Replace `os.sched_getaffinity()` with `os.cpu_count()`
+   - Set `num_workers=0` in DataLoader to avoid multiprocessing issues
+
+4. **Gene Name Cleaning**:
+   - 252 genes in SYMBOL_ENSG format need splitting on "_ENSG"
+   - 5,840 ENSG-only IDs are kept as-is
+   - 74% gene coverage achieved (19,359/26,167 genes)
+
+Create `scripts/generate_scgpt_embeddings_v2.py` (preferred implementation):
 ```python
 #!/usr/bin/env python
 """
-Generate scGPT embeddings for all Tabula Sapiens v2 tissues.
-Run with: ./scripts/run_scgpt.sh python scripts/generate_scgpt_embeddings.py
+Generate scGPT embeddings using official API.
+Run with: ./scripts/run_scgpt.sh python scripts/generate_scgpt_embeddings_v2.py
 """
 import argparse
 from pathlib import Path
