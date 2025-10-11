@@ -7,7 +7,7 @@ torchaudio==2.1.2
 # Transformers and acceleration
 transformers==4.34.0
 accelerate==0.24.1
-# flash-attn==2.3.6  # Requires CUDA, not available on macOS
+flash-attn==1.0.4  # Requires CUDA
 
 # Scientific computing
 scanpy==1.10.3
@@ -22,3 +22,6 @@ tqdm
 pyarrow>=10.0.0
 python-dotenv>=1.1.0
 ipykernel
+
+# scGPT itself
+scgpt

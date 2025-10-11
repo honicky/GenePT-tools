@@ -57,6 +57,12 @@ def get_clean_gene_symbols(adata):
 
 ### scGPT
 - **Model**: Zero-shot scGPT (whole human model)
+- **Download Location**: https://drive.google.com/drive/folders/1oWh_-ZRdhtoGQ2Fw24HP41FgLoomVo-y
+  - Note: Requires Google account authentication for download
+  - Files needed:
+    - `best_model.pt` (model checkpoint)
+    - `args.json` (model configuration)
+    - `vocab.json` (gene vocabulary, 60,697 genes)
 - **Embedding Dimension**: 512
 - **Input Requirements**:
   - Raw counts (from X_original layer)

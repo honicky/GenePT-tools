@@ -1101,7 +1101,6 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
     { name = "seaborn" },
-    { name = "torch" },
     { name = "yapf" },
 ]
 
@@ -1128,7 +1127,7 @@ requires-dist = [
     { name = "s3fs", specifier = ">=0.4.2" },
     { name = "scanpy" },
     { name = "scikit-learn" },
-    { name = "torch", specifier = ">=2.4.0" },
+    { name = "torch", specifier = ">=2.1.2" },
     { name = "umap-learn" },
     { name = "wandb", specifier = ">=0.20.1" },
     { name = "xgboost", specifier = ">=3.0.1" },
@@ -1150,7 +1149,6 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
     { name = "seaborn" },
-    { name = "torch", specifier = "==2.4.0" },
     { name = "yapf", specifier = "==0.40.2" },
 ]
 

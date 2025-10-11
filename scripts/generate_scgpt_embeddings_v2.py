@@ -283,7 +283,7 @@ def main():
         sys.exit(1)
     
     # Check for model files
-    expected_files = ['vocab.json', 'best_model_ckpt.pt']
+    expected_files = ['vocab.json', 'best_model.pt']
     missing_files = [f for f in expected_files if not (args.model_dir / f).exists()]
     if missing_files:
         logger.warning(f"Some expected files are missing: {missing_files}")
