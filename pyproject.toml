@@ -48,6 +48,8 @@ dev = [
     "pytest-xdist",
     "ruff",
     "yapf==0.40.2",
+    "cz-benchmarks>=0.14.0",
+    "ipywidgets>=8.1.7",
 ]
 
 [tool.pytest.ini_options]
