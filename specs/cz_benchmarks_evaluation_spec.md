@@ -222,10 +222,23 @@ Thymus         | 0.83         | 0.87         | 0.89      | GenePT+TF
      - `process_gene_names()` - Handle GENE_ENSG format in feature_name column
      - `generate_genept_1024d_for_tissue()` - Generate cell embeddings for each tissue
    - **Output**: Parquet files saved to `data/cz_benchmark/embeddings/genept_1024d/`
-2. **Phase 2**: Implement embedding combination and alignment logic
-3. **Phase 3**: Integrate with CZ benchmarks label prediction task
-4. **Phase 4**: Execute evaluation pipeline and collect results
-5. **Phase 5**: Generate comparative analysis and visualizations
+
+2. **Phase 2**: Implement embedding combination and alignment logic ✅
+   - **Status**: Implemented in `notebooks/cz_benchmarks_combine_embeddings.ipynb`
+   - **Key Functions**:
+     - `load_embeddings_for_tissue()` - Load and align all embedding types
+     - `create_combined_embeddings()` - Create GenePT alone, GenePT+scGPT, GenePT+Transcriptformer
+     - `save_combined_embeddings()` - Save with metadata to parquet
+   - **Output**: Combined embeddings saved to `data/cz_benchmark/embeddings/combined/`
+
+3. **Phase 3-5**: CZ Benchmarks Integration and Evaluation ✅
+   - **Status**: Implemented in `notebooks/cz_benchmarks_label_prediction.ipynb`
+   - **Key Components**:
+     - `run_cz_label_prediction()` - Wrapper for CZ's MetadataLabelPredictionTask
+     - `evaluate_tissue_embedding_combination()` - Complete evaluation pipeline
+     - Results collection with accuracy, F1, precision, recall metrics
+     - Comparative visualizations and performance analysis
+   - **Output**: Results and figures saved to `data/cz_benchmark/results/`
 
 ## Dependencies
 
