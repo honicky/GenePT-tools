@@ -1,6 +1,8 @@
 
 data/
 save/
+reports/
+results/
 .DS_Store
 
 ## Standard GitHub python project ignore below here
