@@ -129,8 +129,9 @@ if _torch_available:
     # Perform sparse matrix multiplication
     cell_embeddings = torch.sparse.mm(expression_matrix, embedding_matrix.T)
 
-    # Normalize the cell embeddings
+    # Normalize the cell embeddings, avoiding division by zero
     norms = torch.norm(cell_embeddings, dim=1, keepdim=True)
+    norms = torch.where(norms == 0, torch.ones_like(norms), norms)
     cell_embeddings = cell_embeddings / norms
 
     return cell_embeddings
@@ -154,8 +155,9 @@ def create_cell_embeddings(expression_matrix, embedding_matrix, valid_indices):
   # Perform the matrix multiplication (n_cells x n_embedding_dimensions)
   cell_embeddings = filtered_expression @ embedding_matrix.T
 
-  # Normalize the cell embeddings
+  # Normalize the cell embeddings, avoiding division by zero
   norms = np.linalg.norm(cell_embeddings, axis=1, keepdims=True)
+  norms[norms == 0] = 1
   cell_embeddings = cell_embeddings / norms
 
   return cell_embeddings
