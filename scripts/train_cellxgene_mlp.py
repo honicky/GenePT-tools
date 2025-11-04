@@ -78,7 +78,42 @@ def parse_args():
     action="store_true",
     help="Only use local files, don't download from S3"
   )
-  
+  parser.add_argument(
+    "--use-composable-dataset",
+    action="store_true",
+    help="Use composable embedding dataset (new system)"
+  )
+  parser.add_argument(
+    "--base-data-dir",
+    type=Path,
+    default=None,
+    help="Base directory for composable embeddings (e.g., /mmc-scratch/scratch/)"
+  )
+  parser.add_argument(
+    "--embedding-types",
+    nargs="+",
+    default=["genept"],
+    help="Embedding types to use (e.g., genept tissue scgpt)"
+  )
+  parser.add_argument(
+    "--genept-dims",
+    type=int,
+    default=1536,
+    help="Number of GenePT dimensions to use (default: 1536, use 0 for all 3072)"
+  )
+  parser.add_argument(
+    "--cell-count-threshold",
+    type=int,
+    default=5000,
+    help="Minimum number of samples per cell type (default: 5000, use 0 for no filtering)"
+  )
+  parser.add_argument(
+    "--cell-counts-file",
+    type=Path,
+    default=None,
+    help="CSV file with cell type counts (columns: cell_type, cell_count)"
+  )
+
   # Model parameters
   parser.add_argument(
     "--n-dims",
@@ -341,10 +376,10 @@ def parse_args():
 
 def load_cell_types(cell_types_file: Path = None):
   """Load cell types and codes.
-  
+
   Args:
     cell_types_file: Optional path to file with cell types and codes
-    
+
   Returns:
     Tuple of (cell_types list, cell_type_codes Series)
   """
@@ -361,19 +396,101 @@ def load_cell_types(cell_types_file: Path = None):
     print("Warning: Using simplified cell type list. Provide --cell-types-file for full list.")
     cell_types = [f"type_{i}" for i in range(377)]  # Placeholder
     cell_type_codes = pd.Series(range(377), index=cell_types)
-  
+
   return cell_types, cell_type_codes
 
 
-def run_training_with_config(config: TrainingConfig, cell_types: list, cell_type_codes: pd.Series, trial=None):
+def create_code_remapping(
+    cell_types: list,
+    cell_type_codes: pd.Series,
+    cell_counts_file: Path,
+    min_count: int
+):
+  """Create code remapping that maps excluded types to -100 (for filtering).
+
+  Args:
+    cell_types: List of all cell types
+    cell_type_codes: Series mapping cell types to original codes
+    cell_counts_file: Path to CSV with columns (cell_type, cell_count)
+    min_count: Minimum number of samples required
+
+  Returns:
+    filtered_cell_types: List of included cell types
+    filtered_codes: Sequential codes for included types (0 to N-1)
+    code_remapping: Dict mapping ALL original codes to filtered codes OR -100
+    mapping_df: DataFrame with mapping info for WandB logging
+  """
+  # Load cell counts
+  counts_df = pd.read_csv(cell_counts_file)
+
+  # Separate included vs excluded types
+  included_df = counts_df[counts_df['cell_count'] >= min_count].copy()
+  excluded_df = counts_df[counts_df['cell_count'] < min_count].copy()
+
+  # Create sequential codes for included types
+  filtered_cell_types = included_df['cell_type'].tolist()
+  filtered_codes = pd.Series(range(len(filtered_cell_types)), index=filtered_cell_types)
+
+  # Create remapping for ALL types (included + excluded)
+  code_remapping = {}
+
+  # Map included types to new sequential codes (0, 1, 2, ..., N-1)
+  for cell_type in filtered_cell_types:
+    if cell_type in cell_type_codes.index:
+      original_code = cell_type_codes[cell_type]
+      new_code = filtered_codes[cell_type]
+      code_remapping[original_code] = new_code
+
+  # Map excluded types to -100 (marker for filtering)
+  for cell_type in excluded_df['cell_type']:
+    if cell_type in cell_type_codes.index:
+      original_code = cell_type_codes[cell_type]
+      code_remapping[original_code] = -100
+
+  # Create mapping DataFrame (only for included types)
+  mapping_df = pd.DataFrame({
+    'cell_type': filtered_cell_types,
+    'filtered_code': range(len(filtered_cell_types)),
+    'original_code': [cell_type_codes[ct] for ct in filtered_cell_types if ct in cell_type_codes.index],
+    'cell_count': [counts_df[counts_df['cell_type'] == ct]['cell_count'].iloc[0]
+                   for ct in filtered_cell_types]
+  }).sort_values('cell_count', ascending=False)
+
+  # Print filtering summary
+  total_types = len(cell_types)
+  total_samples = counts_df['cell_count'].sum()
+  filtered_samples = included_df['cell_count'].sum()
+
+  print(f"\nCell Type Filtering (threshold={min_count}):")
+  print(f"  Original cell types: {total_types}")
+  print(f"  Filtered cell types: {len(filtered_cell_types)} ({100*len(filtered_cell_types)/total_types:.1f}%)")
+  print(f"  Cell types excluded: {total_types - len(filtered_cell_types)}")
+  print(f"  Sample coverage: {filtered_samples:,} / {total_samples:,} ({100*filtered_samples/total_samples:.1f}%)")
+  print(f"  Top 10 included cell types by count:")
+  for i, row in mapping_df.head(10).iterrows():
+    print(f"    {row['filtered_code']:3d}: {row['cell_type'][:60]:60s} ({row['cell_count']:6,d} samples)")
+
+  return filtered_cell_types, filtered_codes, code_remapping, mapping_df
+
+
+def run_training_with_config(
+    config: TrainingConfig,
+    cell_types: list,
+    cell_type_codes: pd.Series,
+    code_remapping: dict = None,
+    mapping_df: pd.DataFrame = None,
+    trial=None
+):
   """Run training with a given configuration.
-  
+
   Args:
     config: Training configuration
     cell_types: List of cell type names
     cell_type_codes: Series mapping cell types to codes
+    code_remapping: Optional dict mapping original codes to filtered codes
+    mapping_df: Optional DataFrame with cell type mapping for WandB
     trial: Optional Optuna trial for hyperparameter tuning
-    
+
   Returns:
     Final metrics dictionary
   """
@@ -381,17 +498,19 @@ def run_training_with_config(config: TrainingConfig, cell_types: list, cell_type
   trainer = MLPTrainer(
     config=config,
     cell_types=cell_types,
-    cell_type_codes=cell_type_codes
+    cell_type_codes=cell_type_codes,
+    code_remapping=code_remapping,
+    mapping_df=mapping_df
   )
-  
+
   # Add Optuna trial if provided
   if trial is not None:
     trainer.optuna_trial = trial
-  
+
   # Run training
   print("Starting training...")
   final_metrics = trainer.run()
-  
+
   return final_metrics
 
 
@@ -438,10 +557,24 @@ def validate_required_parameters(args, config=None):
 def main():
   """Main training function."""
   args = parse_args()
-  
+
   # Load cell types
   cell_types, cell_type_codes = load_cell_types(args.cell_types_file)
   print(f"Loaded {len(cell_types)} cell types, training on {len(cell_type_codes)} codes")
+
+  # Apply cell type filtering if threshold specified
+  code_remapping = None
+  mapping_df = None
+  if args.cell_count_threshold > 0 and args.cell_counts_file:
+    filtered_cell_types, filtered_codes, code_remapping, mapping_df = create_code_remapping(
+      cell_types=cell_types,
+      cell_type_codes=cell_type_codes,
+      cell_counts_file=args.cell_counts_file,
+      min_count=args.cell_count_threshold
+    )
+    # Use filtered cell types for training
+    cell_types = filtered_cell_types
+    cell_type_codes = filtered_codes
   
   # Check if we're in tuning mode
   if args.tuning_config:
@@ -576,6 +709,9 @@ def main():
     # Determine if local checkpoints should be enabled
     enable_local_checkpoints = args.local_checkpoints and not args.no_local_checkpoints
     
+    # Handle genept_dims (0 means use all dimensions)
+    genept_dims = args.genept_dims if args.genept_dims > 0 else None
+
     # Create configuration
     config = TrainingConfig(
       # Data
@@ -585,6 +721,14 @@ def main():
       s3_prefix=args.s3_prefix,
       aws_profile=args.aws_profile,
       download_if_missing=args.download_if_missing and not args.no_download,
+      # Composable embeddings
+      use_composable_dataset=args.use_composable_dataset,
+      base_data_dir=args.base_data_dir,
+      embedding_types=args.embedding_types,
+      genept_dims=genept_dims,
+      # Cell type filtering
+      cell_count_threshold=args.cell_count_threshold,
+      cell_counts_file=args.cell_counts_file,
       # Model
       n_dims=args.n_dims,
       n_hidden_layers=args.n_hidden_layers,
@@ -637,9 +781,13 @@ def main():
     for key, value in config_dict.items():
       print(f"  {key}: {value}")
     print("="*60 + "\n")
-    
+
     # Run training
-    final_metrics = run_training_with_config(config, cell_types, cell_type_codes)
+    final_metrics = run_training_with_config(
+      config, cell_types, cell_type_codes,
+      code_remapping=code_remapping,
+      mapping_df=mapping_df
+    )
   
   # Print final metrics
   print("\n" + "="*60)

@@ -291,13 +291,25 @@ tissues_to_evaluate = ["Blood", "Bone_Marrow", "Lung", "Mammary", "Thymus"]
    - Deliverable: Functional Transcriptformer script
    - Validation: Script imports run without errors
 
-2. **Download Transcriptformer checkpoint**
+2. **Download Transcriptformer checkpoint** ✅ (In Progress)
    ```bash
-   # Download from official repository
-   # Expected size: ~1-3GB
+   # Install Transcriptformer package from PyPI
+   source .venv-transcriptformer/bin/activate
+   uv pip install transcriptformer  # ✅ Installed v0.6.0
+   uv pip install "zarr<3"  # ✅ Fixed zarr compatibility
+
+   # Download ALL models (including tf-metazoa for diverse species)
+   ./scripts/run_transcriptformer.sh transcriptformer download all \
+       --checkpoint-dir models/transcriptformer
+
+   # Available models:
+   # - tf-sapiens: Trained on human data
+   # - tf-exemplar: Trained on diverse species
+   # - tf-metazoa: Trained on all metazoan data (using this one)
    ```
-   - Deliverable: `models/transcriptformer/transcriptformer_pretrained.pt`
-   - Validation: Model loads successfully
+   - Deliverable: Model checkpoints in `models/transcriptformer/`
+   - Status: Downloading all models (currently in progress)
+   - Validation: Model loads successfully with transcriptformer package
 
 3. **Test on same small tissue**
    ```bash

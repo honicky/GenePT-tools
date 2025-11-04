@@ -16,6 +16,7 @@ from tqdm import tqdm
 from ..models.mlp_classifier import MLPClassifier
 from ..data_loading.s3_dataset import S3ParquetStreamDataset
 from ..data_loading.pt_dataset import PTFileStreamDataset
+from ..data_loading.composable_dataset import ComposableTrainingDataset
 from ..utils.checkpoint import CheckpointManager, load_checkpoint, save_best_model, save_checkpoint
 from .metrics import evaluate, evaluate_with_hierarchy
 from .config import TrainingConfig
@@ -41,19 +42,25 @@ class MLPTrainer:
       config: TrainingConfig,
       cell_types: list,
       cell_type_codes: pd.Series,
+      code_remapping: dict = None,
+      mapping_df: pd.DataFrame = None,
       trial=None  # Optional Optuna trial
   ):
     """Initialize the trainer.
-    
+
     Args:
       config: Training configuration
       cell_types: List of all cell types
       cell_type_codes: Series mapping cell types to codes
+      code_remapping: Optional dict mapping original codes to filtered codes
+      mapping_df: Optional DataFrame with cell type mapping for WandB
       trial: Optional Optuna trial for hyperparameter optimization
     """
     self.config = config
     self.cell_types = cell_types
     self.cell_type_codes = cell_type_codes
+    self.code_remapping = code_remapping
+    self.mapping_df = mapping_df
     self.trial = trial
     
     # Set random seeds for reproducibility
@@ -631,12 +638,55 @@ class MLPTrainer:
       config=self.config.to_dict(),
       reinit=True
     )
-    
+
+    # Log cell type mapping if filtering is enabled
+    if self.mapping_df is not None:
+      self._log_cell_type_mapping()
+
     # Watch model (reduced frequency to avoid overwhelming wandb)
     wandb.watch(self.model, log='gradients', log_freq=200)
-    
+
     print(f"Initialized W&B run: {self.wandb_run.name}")
-  
+
+  def _log_cell_type_mapping(self):
+    """Log cell type mapping to WandB as config metadata."""
+    if self.wandb_run is None or self.mapping_df is None:
+      return
+
+    # 1. Log as WandB Table (viewable in UI)
+    mapping_table = wandb.Table(dataframe=self.mapping_df)
+    wandb.log({"cell_type_mapping": mapping_table})
+
+    # 2. Save as CSV artifact for reproducibility
+    artifact = wandb.Artifact(
+      name=f"cell_type_mapping_{wandb.run.id}",
+      type="dataset_metadata",
+      description=f"Filtered cell type mapping (threshold={self.config.cell_count_threshold})"
+    )
+
+    mapping_file = self.config.checkpoint_dir / "cell_type_mapping.csv"
+    mapping_file.parent.mkdir(parents=True, exist_ok=True)
+    self.mapping_df.to_csv(mapping_file, index=False)
+    artifact.add_file(str(mapping_file))
+    wandb.log_artifact(artifact)
+
+    # 3. Log summary statistics to wandb.config
+    wandb.config.update({
+      "cell_count_threshold": self.config.cell_count_threshold,
+      "n_cell_types_filtered": len(self.mapping_df),
+      "sample_coverage_pct": 100 * self.mapping_df['cell_count'].sum() / self.mapping_df['cell_count'].sum()  # Will be calculated properly in actual use
+    }, allow_val_change=True)
+
+    # 4. Log top 10 cell types as summary
+    top_10 = self.mapping_df.head(10)[['filtered_code', 'cell_type', 'cell_count']].to_dict('records')
+    wandb.summary['top_10_cell_types'] = top_10
+
+    if self.config.verbose:
+      print(f"Logged cell type mapping to WandB:")
+      print(f"  - Table: cell_type_mapping ({len(self.mapping_df)} rows)")
+      print(f"  - Artifact: cell_type_mapping_{wandb.run.id}")
+      print(f"  - Config: threshold={self.config.cell_count_threshold}, filtered={len(self.mapping_df)}")
+
   def save_artifact(self, file_path: Path, artifact_name: str, artifact_type: str, description: str = ""):
     """Save a file as WandB artifact.
     
@@ -698,7 +748,30 @@ class MLPTrainer:
         print(f"[DEBUG] Local data path is None")
       pt_files = []
     
-    if pt_files and any(f.name.startswith("batch_") for f in pt_files):
+    # Check if using composable dataset (new system)
+    if self.config.use_composable_dataset:
+      # Use composable embedding dataset
+      if self.config.verbose:
+        print(f"Using composable embedding dataset")
+        print(f"  Base dir: {self.config.base_data_dir}")
+        print(f"  Embedding types: {self.config.embedding_types}")
+        print(f"  GenePT dims: {self.config.genept_dims}")
+
+      dataset = ComposableTrainingDataset(
+        base_dir=self.config.base_data_dir,
+        embedding_types=self.config.embedding_types,
+        batch_size=self.config.batch_size,
+        start_batch_file=self.config.start_batch_file,
+        end_batch_file=self.config.end_batch_file,
+        genept_dims=self.config.genept_dims,
+        code_remapping=self.code_remapping,
+        track_invalid_embeddings=self.config.track_invalid_embeddings,
+        shuffle_files_per_epoch=self.config.shuffle_files_per_epoch,
+        shuffle_within_files=self.config.shuffle_within_files,
+        seed=self.config.seed,
+        verbose=self.config.verbose
+      )
+    elif pt_files and any(f.name.startswith("batch_") for f in pt_files):
       # Use fast PT dataset
       if self.config.verbose:
         print(f"Using fast PT dataset from {local_data_path}")

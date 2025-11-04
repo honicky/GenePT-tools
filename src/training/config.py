@@ -21,6 +21,17 @@ class TrainingConfig:
   aws_profile: str = None
   download_if_missing: bool = True
   n_dims: int = 500  # Embedding dimension used in best notebook run
+
+  # Composable embeddings (new system)
+  use_composable_dataset: bool = False  # Use new composable embedding system
+  base_data_dir: Optional[Path] = None  # Base directory for composable embeddings
+  embedding_types: List[str] = field(default_factory=lambda: ["genept"])  # e.g., ["genept", "tissue"]
+  genept_dims: Optional[int] = 1536  # Number of GenePT dimensions (None = all 3072)
+
+  # Cell type filtering
+  cell_count_threshold: int = 5000  # Minimum samples per cell type (0 = no filtering)
+  cell_counts_file: Optional[Path] = None  # CSV with cell type counts (cell_type, cell_count)
+  track_invalid_embeddings: bool = True  # Filter out rows with invalid embeddings (all-zero, NaN)
   
   # Model parameters (from notebook's best hyperparameters)
   n_hidden_layers: int = 3
@@ -86,13 +97,19 @@ class TrainingConfig:
     # Convert paths
     self.data_dir = Path(self.data_dir)
     self.checkpoint_dir = Path(self.checkpoint_dir)
-    
+
     if self.local_data_dir is not None:
       self.local_data_dir = Path(self.local_data_dir)
-    
+
     if self.test_data_dir is not None:
       self.test_data_dir = Path(self.test_data_dir)
-    
+
+    if self.base_data_dir is not None:
+      self.base_data_dir = Path(self.base_data_dir)
+
+    if self.cell_counts_file is not None:
+      self.cell_counts_file = Path(self.cell_counts_file)
+
     if self.resume_from is not None:
       self.resume_from = Path(self.resume_from)
     
