@@ -1,0 +1,70 @@
+# Quick profiling test - runs for 20 steps only
+optuna:
+  study_name: "profiling_test"
+  direction: "minimize"
+  metric: "val_logloss"
+  load_if_exists: false
+
+n_trials: 1  # Just one trial for testing
+
+fixed_params:
+  # Data
+  use_composable_dataset: true
+  base_data_dir: "/mmc-scratch/scratch/"
+  embedding_types: ["genept", "tissue", "metadata"]
+  genept_dims: 1536
+
+  # Test data configuration
+  test_genept_suffix: "_test_v1_scgpt"
+  test_tissue_suffix: "_test_v1_tissue"
+  test_metadata_suffix: "_test_v1"
+
+  # Cell type filtering
+  cell_count_threshold: 5000
+  cell_counts_file: "/data/batch-jobs/cell_counts.csv"
+
+  # Model architecture
+  n_hidden_layers: 4
+
+  # Training - LIMITED FOR TESTING
+  epochs: 1
+  batch_size: 1024
+  max_steps_per_epoch: 20  # Stop after 20 batches
+
+  # Evaluation - disable for quick test
+  eval_every_n_batches: 9999
+  eval_full_every_n_batches: 9999
+  checkpoint_every_n_batches: 10000
+
+  # System
+  device: "cuda"
+  num_workers: 4
+  mixed_precision: false
+
+  # Output
+  wandb_save_artifacts: false
+  local_checkpoints: false
+  profile_timing: true  # ENABLE PROFILING
+  verbose: true
+
+  # Metrics
+  enable_hierarchical_metrics: false
+
+  # Data loading
+  shuffle_files_per_epoch: true
+  shuffle_within_files: true
+  seed: 42
+
+# Hyperparameters (fixed for test)
+hyperparameters:
+  dropout:
+    type: "fixed"
+    value: 0.1
+
+  learning_rate:
+    type: "fixed"
+    value: 1e-4
+
+  weight_decay:
+    type: "fixed"
+    value: 1e-5

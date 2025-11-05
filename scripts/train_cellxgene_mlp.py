@@ -116,12 +116,6 @@ def parse_args():
 
   # Model parameters
   parser.add_argument(
-    "--n-dims",
-    type=int,
-    default=500,
-    help="Number of embedding dimensions"
-  )
-  parser.add_argument(
     "--n-hidden-layers",
     type=int,
     default=3,
@@ -447,14 +441,17 @@ def create_code_remapping(
       original_code = cell_type_codes[cell_type]
       code_remapping[original_code] = -100
 
-  # Create mapping DataFrame (only for included types)
-  mapping_df = pd.DataFrame({
-    'cell_type': filtered_cell_types,
-    'filtered_code': range(len(filtered_cell_types)),
-    'original_code': [cell_type_codes[ct] for ct in filtered_cell_types if ct in cell_type_codes.index],
-    'cell_count': [counts_df[counts_df['cell_type'] == ct]['cell_count'].iloc[0]
-                   for ct in filtered_cell_types]
-  }).sort_values('cell_count', ascending=False)
+  # Create mapping DataFrame (only for included types that exist in cell_type_codes)
+  mapping_rows = []
+  for i, ct in enumerate(filtered_cell_types):
+    if ct in cell_type_codes.index:
+      mapping_rows.append({
+        'cell_type': ct,
+        'filtered_code': i,
+        'original_code': cell_type_codes[ct],
+        'cell_count': counts_df[counts_df['cell_type'] == ct]['cell_count'].iloc[0]
+      })
+  mapping_df = pd.DataFrame(mapping_rows).sort_values('cell_count', ascending=False)
 
   # Print filtering summary
   total_types = len(cell_types)
@@ -528,29 +525,49 @@ def validate_required_parameters(args, config=None):
   
   # Get effective values (command line overrides config)
   def get_effective_value(param_name):
-    # Command line value takes precedence
+    # Command line value takes precedence (but False from store_true doesn't count as "specified")
     cli_value = getattr(args, param_name, None)
-    if cli_value is not None:
+
+    # For boolean flags (store_true), only use CLI value if it's True (explicitly set)
+    # Otherwise check config. This allows config to set True when CLI didn't specify the flag.
+    if param_name == 'use_composable_dataset':
+      if cli_value is True:  # Only override if flag was explicitly provided
+        return cli_value
+    elif cli_value is not None:
       return cli_value
-    
+
     # Check config fixed_params if in tuning mode
     if config and 'fixed_params' in config:
       return config['fixed_params'].get(param_name)
-    
+
     return None
   
-  # Required parameters
-  required_params = [
-    ('local_data_dir', 'training data directory'),
-    ('test_data_dir', 'validation/test data directory'),
-  ]
-  
+  # Check if using composable dataset
+  use_composable = get_effective_value('use_composable_dataset')
+
+  # DEBUG: Print what we detected
+  if config:
+    print(f"DEBUG: use_composable_dataset = {use_composable}")
+    print(f"DEBUG: fixed_params keys = {list(config.get('fixed_params', {}).keys())}")
+
+  if use_composable:
+    # For composable dataset, require base_data_dir
+    required_params = [
+      ('base_data_dir', 'base directory for composable embeddings'),
+    ]
+  else:
+    # For S3/parquet dataset, require local_data_dir and test_data_dir
+    required_params = [
+      ('local_data_dir', 'training data directory'),
+      ('test_data_dir', 'validation/test data directory'),
+    ]
+
   # Check each required parameter
   for param_name, description in required_params:
     effective_value = get_effective_value(param_name)
     if not effective_value:
       errors.append(f"Missing required parameter: {param_name} ({description})")
-  
+
   return errors
 
 
@@ -561,6 +578,32 @@ def main():
   # Load cell types
   cell_types, cell_type_codes = load_cell_types(args.cell_types_file)
   print(f"Loaded {len(cell_types)} cell types, training on {len(cell_type_codes)} codes")
+
+  # If using tuning mode, load config early to get filtering parameters
+  tuning_config_dict = None
+  if args.tuning_config:
+    import yaml
+    with open(args.tuning_config, 'r') as f:
+      tuning_config_dict = yaml.safe_load(f)
+
+    # Override args with fixed_params from tuning config if not specified on command line
+    fixed_params = tuning_config_dict.get('fixed_params', {})
+    if args.cell_count_threshold == 0 and 'cell_count_threshold' in fixed_params:
+      args.cell_count_threshold = fixed_params['cell_count_threshold']
+    if args.cell_counts_file is None and 'cell_counts_file' in fixed_params:
+      args.cell_counts_file = fixed_params['cell_counts_file']
+
+  # Reload cell types with proper file if now available
+  if args.cell_count_threshold > 0 and args.cell_counts_file:
+    # When filtering is enabled, we need the full canonical cell types list
+    # Use cell_types.csv from same directory as cell_counts.csv
+    if args.cell_types_file is None:
+      counts_path = Path(args.cell_counts_file)
+      cell_types_path = counts_path.parent / "cell_types.csv"
+      if cell_types_path.exists():
+        args.cell_types_file = cell_types_path
+        cell_types, cell_type_codes = load_cell_types(args.cell_types_file)
+        print(f"Reloaded cell types from {cell_types_path}: {len(cell_types)} types")
 
   # Apply cell type filtering if threshold specified
   code_remapping = None
@@ -575,20 +618,15 @@ def main():
     # Use filtered cell types for training
     cell_types = filtered_cell_types
     cell_type_codes = filtered_codes
-  
+
   # Check if we're in tuning mode
-  if args.tuning_config:
+  if tuning_config_dict:
     if not OPTUNA_AVAILABLE:
       print("Error: Optuna is required for hyperparameter tuning. Install with: pip install optuna")
       sys.exit(1)
-    
-    # Load config for validation
-    import yaml
-    with open(args.tuning_config, 'r') as f:
-      config = yaml.safe_load(f)
-    
+
     # Validate required parameters
-    validation_errors = validate_required_parameters(args, config)
+    validation_errors = validate_required_parameters(args, tuning_config_dict)
     if validation_errors:
       print("Error: Missing required parameters:")
       for error in validation_errors:
@@ -634,8 +672,10 @@ def main():
         grad_clip = getattr(config, 'gradient_clip_val', 'none')
         
         # Create descriptive run name with trial number for sorting
+        # For composable datasets, use genept_dims or "composable" as placeholder
+        dims_str = f"{config.genept_dims}" if hasattr(config, 'genept_dims') and config.genept_dims else "500"
         config.wandb_run_name = (
-          f"{trial.number:03d}_dims{config.n_dims}_layers{config.n_hidden_layers}_"
+          f"{trial.number:03d}_dims{dims_str}_layers{config.n_hidden_layers}_"
           f"drop{config.dropout:.3f}_bs{config.batch_size}_lr{lr_str}_wd{wd_str}_"
           f"{optimizer}_{scheduler}"
         )
@@ -650,7 +690,9 @@ def main():
       trainer = MLPTrainer(
         config=config,
         cell_types=cell_types,
-        cell_type_codes=cell_type_codes
+        cell_type_codes=cell_type_codes,
+        code_remapping=code_remapping,
+        mapping_df=mapping_df
       )
       
       # Add Optuna trial for pruning support
@@ -730,7 +772,6 @@ def main():
       cell_count_threshold=args.cell_count_threshold,
       cell_counts_file=args.cell_counts_file,
       # Model
-      n_dims=args.n_dims,
       n_hidden_layers=args.n_hidden_layers,
       dropout=args.dropout,
       # Training
@@ -738,6 +779,7 @@ def main():
       weight_decay=args.weight_decay,
       batch_size=args.batch_size,
       epochs=args.epochs,
+      
       # Evaluation
       eval_every_n_batches=args.eval_every_n_batches,
       eval_full_every_n_batches=args.eval_full_every_n_batches,

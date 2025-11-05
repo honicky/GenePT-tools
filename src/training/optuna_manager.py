@@ -372,7 +372,7 @@ class OptunaManager:
     
     # Direct mappings (best_model_metric and best_model_mode are automatically derived from Optuna config)
     direct_mappings = [
-      'n_dims', 'n_hidden_layers', 'dropout', 'learning_rate', 
+      'n_dims', 'n_hidden_layers', 'dropout', 'learning_rate',
       'weight_decay', 'optimizer_type', 'lr_scheduler', 'gradient_clip_val',
       'batch_size', 'mixed_precision',
       's3_bucket', 's3_prefix', 'aws_profile',
@@ -382,7 +382,13 @@ class OptunaManager:
       'enable_hierarchical_metrics', 'ontology_cache_dir',
       'start_batch_file', 'end_batch_file', 'max_steps_per_epoch',
       'wandb_save_artifacts', 'local_checkpoints',
-      'wandb_project', 'wandb_entity', 'wandb_run_name'
+      'wandb_project', 'wandb_entity', 'wandb_run_name',
+      # Composable dataset parameters
+      'use_composable_dataset', 'base_data_dir', 'embedding_types', 'genept_dims',
+      # Cell type filtering parameters
+      'cell_count_threshold', 'cell_counts_file', 'track_invalid_embeddings',
+      # Other config parameters
+      'epochs', 'verbose', 'profile_timing'
     ]
     
     for key in direct_mappings:
@@ -390,13 +396,18 @@ class OptunaManager:
         config_kwargs[key] = params[key]
     
     # Handle Path conversions
-    path_fields = ['local_data_dir', 'test_data_dir', 'checkpoint_dir', 'ontology_cache_dir']
+    path_fields = [
+      'local_data_dir', 'test_data_dir', 'checkpoint_dir', 'ontology_cache_dir',
+      'base_data_dir', 'cell_counts_file'
+    ]
     for field in path_fields:
       if field in params and params[field] is not None:
         config_kwargs[field] = Path(params[field])
     
     # Set epochs for quick evaluation during tuning
-    config_kwargs['epochs'] = self.config['optuna'].get('n_epochs_per_trial', 2)
+    # Only override if not specified in fixed_params
+    if 'epochs' not in params:
+      config_kwargs['epochs'] = self.config['optuna'].get('n_epochs_per_trial', 2)
     
     # Automatically set best model tracking to match Optuna optimization metric
     # This ensures consistency between hyperparameter optimization and model saving
@@ -492,13 +503,28 @@ class OptunaManager:
         # Create and run trainer
         trainer = trainer_factory(trial)
         metrics = trainer.run()
-        
-        # Get optimization metric
-        metric_name = self.config['optuna'].get('metric_to_optimize', 'val_loss')
+
+        # Get optimization metric - check both 'metric' and 'metric_to_optimize' fields
+        metric_name = self.config['optuna'].get('metric') or self.config['optuna'].get('metric_to_optimize', 'val_loss')
+
+        # Try to get the metric value
         value = metrics.get(metric_name)
-        
+
+        # If not found and metric name starts with 'val_', try with 'val120k_' prefix
+        if value is None and metric_name.startswith('val_'):
+          base_metric = metric_name[4:]  # Remove 'val_' prefix
+          val120k_metric = f'val120k_{base_metric}'
+          value = metrics.get(val120k_metric)
+          if value is not None:
+            logger.info(f"Using metric '{val120k_metric}' instead of '{metric_name}'")
+            metric_name = val120k_metric
+
         if value is None:
-          raise ValueError(f"Metric '{metric_name}' not found in trainer results")
+          available_metrics = ', '.join(sorted(metrics.keys()))
+          raise ValueError(
+            f"Metric '{metric_name}' not found in trainer results. "
+            f"Available metrics: {available_metrics}"
+          )
         
         return value
         

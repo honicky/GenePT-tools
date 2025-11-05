@@ -165,6 +165,67 @@ Each batch file contains:
 - `row_hash`: Row identifiers for alignment
 - `y`: Cell type labels (optional, in first embedding type)
 
+## Test/Validation Data
+
+The composable system supports test/validation data for hyperparameter tuning and model evaluation.
+
+### Test Data Structure
+
+Test data follows the same structure as training data, with key differences:
+
+1. **No shuffling**: Test data is unshuffled (no need to shuffle since we're not training)
+2. **File format**: Uses `.parquet` files instead of `.pt` files
+3. **Directory naming**: Different suffix pattern (e.g., `_test_v1_scgpt` instead of `_shuffled_scgpt`)
+
+### Test Data Locations
+
+```
+/mmc-scratch/scratch/
+├── cellxgene_v2_test_v1/              # Original test parquet files
+│   ├── <uuid>.parquet
+│   └── ...
+├── cellxgene_v2_test_v1_scgpt/        # GenePT embeddings (test)
+│   ├── <uuid>.parquet
+│   └── ...
+└── cellxgene_v2_test_v1_tissue/       # Tissue embeddings (test)
+    ├── <uuid>.parquet
+    └── ...
+```
+
+### Configuring Test Data
+
+When using composable datasets with test/validation, specify the test data suffixes:
+
+```python
+# In configuration or command line:
+test_genept_suffix: "_test_v1_scgpt"
+test_tissue_suffix: "_test_v1_tissue"
+test_metadata_suffix: "_test_v1"
+```
+
+**Example in Optuna tuning config:**
+
+```yaml
+fixed_params:
+  use_composable_dataset: true
+  base_data_dir: "/mmc-scratch/scratch/"
+  embedding_types: ["genept", "tissue", "metadata"]
+
+  # Test data configuration (different suffixes)
+  test_genept_suffix: "_test_v1_scgpt"
+  test_tissue_suffix: "_test_v1_tissue"
+  test_metadata_suffix: "_test_v1"
+```
+
+### Requirements for Test Data Support
+
+To add test/validation support to the `ComposableTrainingDataset`:
+
+1. **Same alignment mechanism**: Use `row_hash` for aligning embeddings across types
+2. **Parquet file loading**: Support loading from `.parquet` files (contains same structure as `.pt` files)
+3. **No shuffling**: Disable file and sample shuffling for test data
+4. **Flexible suffixes**: Allow configurable directory suffixes for train vs test data
+
 ## Troubleshooting
 
 ### Dataset Loading Errors

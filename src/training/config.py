@@ -20,13 +20,17 @@ class TrainingConfig:
   s3_prefix: str = "cellxgene_v2/training_v1_suffled"
   aws_profile: str = None
   download_if_missing: bool = True
-  n_dims: int = 500  # Embedding dimension used in best notebook run
 
-  # Composable embeddings (new system)
-  use_composable_dataset: bool = False  # Use new composable embedding system
+  # Composable embeddings
+  use_composable_dataset: bool = True  # Use composable embedding system (default)
   base_data_dir: Optional[Path] = None  # Base directory for composable embeddings
   embedding_types: List[str] = field(default_factory=lambda: ["genept"])  # e.g., ["genept", "tissue"]
   genept_dims: Optional[int] = 1536  # Number of GenePT dimensions (None = all 3072)
+
+  # Test/validation data suffixes (for composable dataset)
+  test_genept_suffix: str = "_test_v1_scgpt"  # Suffix for GenePT test data directory
+  test_tissue_suffix: str = "_test_v1_tissue"  # Suffix for tissue test data directory
+  test_metadata_suffix: str = "_test_v1"  # Suffix for metadata test data directory
 
   # Cell type filtering
   cell_count_threshold: int = 5000  # Minimum samples per cell type (0 = no filtering)
@@ -87,6 +91,7 @@ class TrainingConfig:
   wandb_save_artifacts: bool = True  # Save checkpoints as WandB artifacts
   local_checkpoints: bool = True  # Save local filesystem checkpoints (disable when using WandB artifacts)
   verbose: bool = True
+  profile_timing: bool = False  # Enable detailed timing profiling for bottleneck analysis
   
   # Hierarchical metrics
   enable_hierarchical_metrics: bool = True

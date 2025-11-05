@@ -1,0 +1,93 @@
+# Focused hyperparameter sweep for dropout, learning_rate, and weight_decay
+# Tests on metadata-enabled composable embeddings
+
+# Optuna study configuration
+optuna:
+  study_name: "focused_sweep_metadata"
+  direction: "minimize"  # Minimize validation loss
+  metric: "val_logloss"
+  load_if_exists: true
+
+  # Sampler configuration
+  sampler:
+    type: "TPESampler"
+    n_startup_trials: 5  # Random trials before using TPE
+    seed: 42
+
+  # Pruner configuration (stop bad trials early)
+  pruner:
+    type: "MedianPruner"
+    n_startup_trials: 3  # Don't prune first 3 trials
+    n_warmup_steps: 10  # Wait 10 steps before pruning
+    interval_steps: 5  # Check every 5 steps
+
+# Number of trials
+n_trials: 20
+
+# Fixed parameters (not tuned)
+fixed_params:
+  # Data
+  use_composable_dataset: true
+  base_data_dir: "/mmc-scratch/scratch/"
+  embedding_types: ["genept", "tissue", "metadata"]
+  genept_dims: 1536
+
+  # Test data configuration (uses different suffixes than training)
+  test_genept_suffix: "_test_v1_scgpt"
+  test_tissue_suffix: "_test_v1_tissue"
+  test_metadata_suffix: "_test_v1"
+
+  # Cell type filtering
+  cell_count_threshold: 5000
+  cell_counts_file: "/data/batch-jobs/cell_counts.csv"
+
+  # Model architecture - FIXED
+  n_hidden_layers: 4  # Fixed to 4 layers as requested
+
+  # Training - FIXED
+  epochs: 1  # 1 epoch per trial as requested
+  batch_size: 1024
+
+  # Evaluation
+  eval_every_n_batches: 50
+  eval_full_every_n_batches: 500
+  checkpoint_every_n_batches: 10000  # No checkpoints during sweep
+
+  # System
+  device: "cuda"
+  num_workers: 4  # Parallel data loading to reduce I/O bottleneck
+  mixed_precision: false
+
+  # Output
+  wandb_save_artifacts: false
+  local_checkpoints: false  # No local checkpoints during tuning
+  profile_timing: true  # Enable detailed timing profiling to diagnose bottlenecks
+
+  # Metrics
+  enable_hierarchical_metrics: false  # Faster evaluation
+
+  # Data loading
+  shuffle_files_per_epoch: true
+  shuffle_within_files: true
+  seed: 42
+  verbose: false
+
+# Hyperparameters to tune
+hyperparameters:
+  dropout:
+    type: "float"
+    low: 0.0
+    high: 0.3
+    log: false
+
+  learning_rate:
+    type: "float"
+    low: 1.0e-5
+    high: 1.0e-3
+    log: true  # Search in log space
+
+  weight_decay:
+    type: "float"
+    low: 1.0e-6
+    high: 1.0e-3
+    log: true  # Search in log space

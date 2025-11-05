@@ -137,17 +137,42 @@ class MLPTrainer:
         print(f"Warning: Could not load Cell Ontology: {e}")
         print("Continuing without hierarchical metrics")
   
+  def get_input_dim(self) -> int:
+    """Calculate input dimension based on dataset configuration."""
+    if self.config.use_composable_dataset:
+      # Calculate from embedding types
+      input_dim = 0
+      for emb_type in self.config.embedding_types:
+        if emb_type == 'metadata':
+          continue  # Metadata not in X
+        elif emb_type == 'genept':
+          input_dim += self.config.genept_dims if self.config.genept_dims else 3072
+        elif emb_type == 'scgpt':
+          input_dim += 512
+        elif emb_type == 'tissue':
+          input_dim += 126
+        else:
+          raise ValueError(f"Unknown embedding type: {emb_type}")
+      return input_dim
+    else:
+      raise ValueError(
+        "Legacy dataset mode (use_composable_dataset=False) is no longer supported. "
+        "Please use use_composable_dataset=True with base_data_dir and embedding_types."
+      )
+
   def create_model(self) -> nn.Module:
     """Create the MLP model."""
+    input_dim = self.get_input_dim()
     model = MLPClassifier(
-      input_dim=self.config.n_dims,
+      input_dim=input_dim,
       num_classes=self.num_classes,
       n_hidden_layers=self.config.n_hidden_layers,
       dropout=self.config.dropout
     )
     model = model.to(self.device)
-    
+
     print(f"Created model with {model.count_parameters():,} parameters")
+    print(f"Input dimension: {input_dim}")
     print(f"Hidden dimensions: {model.get_hidden_dims()}")
     
     return model
@@ -188,11 +213,25 @@ class MLPTrainer:
   def load_validation_data(self):
     """Load validation datasets from directory, supporting both .parquet and .pt formats."""
     print("Loading validation data...")
-    
+
+    # Check if using composable dataset with test data
+    if self.config.use_composable_dataset and self.config.base_data_dir:
+      # Use composable test dataset
+      print("Using composable test dataset for validation...")
+      self._load_validation_composable()
+      return
+
+    # Legacy validation loading is no longer supported
+    if not self.config.use_composable_dataset:
+      raise ValueError(
+        "Legacy validation loading is no longer supported. "
+        "Please use use_composable_dataset=True with base_data_dir."
+      )
+
     if self.config.test_data_dir is None:
       print("No test_data_dir specified, skipping validation data loading")
       return
-    
+
     test_dir = Path(self.config.test_data_dir)
     if not test_dir.exists():
       print(f"Test directory {test_dir} does not exist")
@@ -258,6 +297,79 @@ class MLPTrainer:
         self.X_val_5k = self.X_val_120k
         self.y_val_5k = self.y_val_120k
   
+  def _load_validation_composable(self):
+    """Load validation data using ComposableTrainingDataset in test mode."""
+    try:
+      # Get test data suffixes from config, or use defaults
+      test_genept_suffix = getattr(self.config, 'test_genept_suffix', '_test_v1_scgpt')
+      test_tissue_suffix = getattr(self.config, 'test_tissue_suffix', '_test_v1_tissue')
+      test_metadata_suffix = getattr(self.config, 'test_metadata_suffix', '_test_v1')
+
+      # Create test dataset with same config as training, but in test mode
+      test_dataset = ComposableTrainingDataset(
+        base_dir=Path(self.config.base_data_dir),
+        embedding_types=self.config.embedding_types,
+        batch_size=1024,  # Use fixed batch size for test loading
+        genept_dims=self.config.genept_dims,
+        code_remapping=self.code_remapping,  # Apply same filtering
+        track_invalid_embeddings=self.config.track_invalid_embeddings,
+        seed=self.config.seed,
+        # Test mode parameters
+        is_test_mode=True,
+        test_genept_suffix=test_genept_suffix,
+        test_tissue_suffix=test_tissue_suffix,
+        test_metadata_suffix=test_metadata_suffix,
+        cell_type_codes=self.cell_type_codes,  # Required for label mapping
+        verbose=self.config.verbose
+      )
+
+      print(f"Loading {len(test_dataset.file_list)} test files...")
+
+      # Load all test data into memory
+      X_list = []
+      y_list = []
+
+      for X_batch, y_batch in test_dataset:
+        X_list.append(X_batch.numpy())
+        y_list.append(y_batch.numpy())
+
+      if not X_list:
+        print("No test data loaded")
+        return
+
+      # Combine all batches
+      X_combined = np.concatenate(X_list, axis=0).astype(np.float32)
+      y_combined = np.concatenate(y_list, axis=0).astype(np.int64)
+
+      # Filter to valid cell types (should already be filtered by code_remapping)
+      # But double-check that y values are in range
+      valid_mask = (y_combined >= 0) & (y_combined < self.num_classes)
+      self.X_val_120k = X_combined[valid_mask]
+      self.y_val_120k = y_combined[valid_mask]
+
+      print(f"Loaded validation set: {self.X_val_120k.shape}")
+      print(f"Valid samples: {valid_mask.sum()} / {len(valid_mask)}")
+
+      # Create 5k subset
+      if len(self.X_val_120k) > 5000:
+        indices = np.random.choice(len(self.X_val_120k), 5000, replace=False)
+        self.X_val_5k = self.X_val_120k[indices]
+        self.y_val_5k = self.y_val_120k[indices]
+        print(f"Created 5k validation subset")
+      else:
+        self.X_val_5k = self.X_val_120k
+        self.y_val_5k = self.y_val_120k
+
+    except Exception as e:
+      print(f"Error loading composable test data: {e}")
+      import traceback
+      traceback.print_exc()
+      # Set to None so training can continue without validation
+      self.X_val_120k = None
+      self.y_val_120k = None
+      self.X_val_5k = None
+      self.y_val_5k = None
+
   def _process_validation_df(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     """Process validation dataframe to extract features and labels."""
     # Extract embedding columns
@@ -293,32 +405,61 @@ class MLPTrainer:
     
     return X, y
   
-  def train_batch(self, X: torch.Tensor, y: torch.Tensor) -> float:
+  def train_batch(self, X: torch.Tensor, y: torch.Tensor) -> tuple[float, dict]:
     """Train on a single batch.
-    
+
     Args:
       X: Input features
       y: Target labels
-      
+
     Returns:
-      Loss value
+      Tuple of (loss value, timing breakdown dict if profiling enabled)
     """
     self.model.train()
-    
-    # Move to device
-    X = X.to(self.device)
-    y = y.to(self.device)
-    
-    # Forward pass
-    self.optimizer.zero_grad()
-    outputs = self.model(X)
-    loss = self.criterion(outputs, y)
-    
-    # Backward pass
-    loss.backward()
-    self.optimizer.step()
-    
-    return loss.item()
+    timings = {}
+
+    # Debug: Check profiling on first call
+    if not hasattr(self, '_profiling_debug_printed'):
+      if self.config.verbose:
+        print(f"[PROFILING] profile_timing = {self.config.profile_timing}")
+      self._profiling_debug_printed = True
+
+    if self.config.profile_timing:
+      # Move to device
+      t0 = time.time()
+      X = X.to(self.device)
+      y = y.to(self.device)
+      timings['gpu_transfer'] = time.time() - t0
+
+      # Forward pass
+      t0 = time.time()
+      self.optimizer.zero_grad()
+      outputs = self.model(X)
+      loss = self.criterion(outputs, y)
+      timings['forward'] = time.time() - t0
+
+      # Backward pass
+      t0 = time.time()
+      loss.backward()
+      timings['backward'] = time.time() - t0
+
+      # Optimizer step
+      t0 = time.time()
+      self.optimizer.step()
+      timings['optimizer'] = time.time() - t0
+    else:
+      # Fast path without timing overhead
+      X = X.to(self.device)
+      y = y.to(self.device)
+
+      self.optimizer.zero_grad()
+      outputs = self.model(X)
+      loss = self.criterion(outputs, y)
+
+      loss.backward()
+      self.optimizer.step()
+
+    return loss.item(), timings
   
   def train_epoch(self, dataloader: DataLoader, epoch: int) -> Dict[str, float]:
     """Train for one epoch.
@@ -342,7 +483,12 @@ class MLPTrainer:
     # Get expected number of batches (this is an estimate)
     expected_batches = len(dataloader) if hasattr(dataloader, '__len__') else None
     
+    iter_start = time.time()  # Track time before entering loop
+
     for batch_idx, (X, y) in enumerate(pbar):
+      # Measure data loading time (time spent waiting for next batch)
+      data_load_time = time.time() - iter_start if self.config.profile_timing else 0
+
       # Check if we're near the end of the epoch (last 10% of batches)
       # and suppress the IterableDataset length warning for those
       if expected_batches and batch_idx > expected_batches * 0.9:
@@ -351,11 +497,11 @@ class MLPTrainer:
         # Re-enable the warning for normal batches
         warnings.filterwarnings('default', message='.*Length of IterableDataset.*was reported to be.*')
       batch_start = time.time()
-      
+
       # Train on batch
-      loss = self.train_batch(X, y)
+      loss, train_timings = self.train_batch(X, y)
       epoch_losses.append(loss)
-      
+
       batch_time = time.time() - batch_start
       batch_times.append(batch_time)
       
@@ -370,15 +516,34 @@ class MLPTrainer:
       
       # Increment step counter before any logging (to ensure correct WandB step ordering)
       self.global_step += 1
-      
+
       # Log to W&B with the incremented step (don't commit yet)
+      wandb_start = time.time() if self.config.profile_timing else 0
       if self.wandb_run is not None:
-        self.wandb_run.log({
+        log_dict = {
           'train/loss': loss,
           'train/batch_time': batch_time,
           'epoch': epoch,
           'global_step': self.global_step
-        }, step=self.global_step, commit=False)
+        }
+
+        # Add detailed timing breakdowns if profiling enabled
+        if self.config.profile_timing and train_timings:
+          log_dict.update({
+            'profile/data_load': data_load_time,
+            'profile/gpu_transfer': train_timings.get('gpu_transfer', 0),
+            'profile/forward': train_timings.get('forward', 0),
+            'profile/backward': train_timings.get('backward', 0),
+            'profile/optimizer': train_timings.get('optimizer', 0),
+          })
+
+        self.wandb_run.log(log_dict, step=self.global_step, commit=False)
+
+      wandb_time = time.time() - wandb_start if self.config.profile_timing else 0
+
+      # Log wandb overhead if profiling
+      if self.config.profile_timing and self.wandb_run is not None and wandb_time > 0:
+        self.wandb_run.log({'profile/wandb_log': wandb_time}, step=self.global_step, commit=False)
       
       # Periodic evaluation on 5k validation set (threshold-based)
       if self.global_step >= self.next_eval_5k_step and self.X_val_5k is not None:
@@ -414,9 +579,13 @@ class MLPTrainer:
       if self.wandb_run is not None:
         # Commit with an empty log to finalize this step
         self.wandb_run.log({}, step=self.global_step, commit=True)
-      
+
+      # Reset iterator timer for next batch's data loading measurement
+      if self.config.profile_timing:
+        iter_start = time.time()
+
       # Check if we've reached max steps per epoch (for quick testing)
-      if (self.config.max_steps_per_epoch is not None and 
+      if (self.config.max_steps_per_epoch is not None and
           batch_idx + 1 >= self.config.max_steps_per_epoch):
         # Early stop message will be visible in the progress bar description
         pbar.set_description(f"Epoch {epoch} (stopped at {self.config.max_steps_per_epoch} steps)")
@@ -603,8 +772,8 @@ class MLPTrainer:
           metrics_path.unlink(missing_ok=True)
       
       self.checkpoint_manager.best_metric = new_best_value
-    
-    return metrics
+
+    return prefixed_metrics
   
   def load_checkpoint(self, checkpoint_path: Path):
     """Load from checkpoint."""
@@ -771,39 +940,11 @@ class MLPTrainer:
         seed=self.config.seed,
         verbose=self.config.verbose
       )
-    elif pt_files and any(f.name.startswith("batch_") for f in pt_files):
-      # Use fast PT dataset
-      if self.config.verbose:
-        print(f"Using fast PT dataset from {local_data_path}")
-      dataset = PTFileStreamDataset(
-        data_dir=local_data_path,
-        batch_size=self.config.batch_size,
-        n_dims=self.config.n_dims,
-        shuffle_files_per_epoch=self.config.shuffle_files_per_epoch,
-        shuffle_within_files=self.config.shuffle_within_files,
-        seed=self.config.seed,
-        verbose=self.config.verbose
-      )
     else:
-      # Use original S3/Parquet dataset
-      if self.config.verbose:
-        print(f"Using S3/Parquet dataset")
-      dataset = S3ParquetStreamDataset(
-        cell_types=self.cell_types,
-        cell_type_codes=self.cell_type_codes,
-        s3_bucket=self.config.s3_bucket,
-        s3_prefix=self.config.s3_prefix,
-        local_data_dir=self.config.local_data_dir,
-        n_dims=self.config.n_dims,
-        batch_size=self.config.batch_size,
-        download_if_missing=self.config.download_if_missing,
-        shuffle_files_per_epoch=self.config.shuffle_files_per_epoch,
-        shuffle_within_files=self.config.shuffle_within_files,
-        aws_profile=self.config.aws_profile,
-        start_batch_file=self.config.start_batch_file,
-        end_batch_file=self.config.end_batch_file,
-        seed=self.config.seed,
-        verbose=self.config.verbose
+      # Legacy dataset modes are no longer supported
+      raise ValueError(
+        "Legacy dataset modes are no longer supported. "
+        "Please use use_composable_dataset=True with base_data_dir and embedding_types."
       )
     
     # Create dataloader
