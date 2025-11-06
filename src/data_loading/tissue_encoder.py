@@ -246,14 +246,101 @@ class TissueEncoder:
 
     return pd.DataFrame(rows).set_index('tissue_id')
 
+  def _encode_single_tissue(self, tissue_id: str) -> np.ndarray:
+    """
+    Encode a single tissue term using three-tier fallback strategy.
+
+    Tier 1: Use CZ slim tissue directly if in curated list
+    Tier 2: Use nearest CZ slim ancestor via ontology traversal
+    Tier 3: Use manual fallback mapping from FALLBACK_TISSUE_MAPPINGS
+
+    Args:
+        tissue_id: Tissue ontology term ID
+
+    Returns:
+        Encoding vector of shape (total_dim,)
+    """
+    encoding = np.zeros(self.total_dim, dtype=np.float32)
+    curated_tissues_set = set(self.tissue_to_idx.keys())
+
+    # Tier 1: Check if tissue is in curated CZ slim list
+    if tissue_id in curated_tissues_set:
+      tissue_idx = self.tissue_to_idx[tissue_id]
+      encoding[tissue_idx] = 1.0
+
+      # Add organ multi-hot
+      organ_indices = self.tissue_to_organ_indices.get(tissue_id, [])
+      for organ_idx in organ_indices:
+        encoding[self.tissue_dim + organ_idx] = 1.0
+
+      # Add system multi-hot
+      system_indices = self.tissue_to_system_indices.get(tissue_id, [])
+      for system_idx in system_indices:
+        encoding[self.tissue_dim + self.organ_dim + system_idx] = 1.0
+
+      return encoding
+
+    # Tier 2: Try to find CZ slim ancestor via ontology
+    nearest_cz_tissue = None
+    try:
+      ancestors = self.ontology_parser.get_term_ancestors(
+          tissue_id, include_self=False)
+      for ancestor in ancestors:
+        if ancestor in curated_tissues_set:
+          nearest_cz_tissue = ancestor
+          break
+    except:
+      pass
+
+    if nearest_cz_tissue:
+      # Use ancestor's encoding
+      tissue_idx = self.tissue_to_idx[nearest_cz_tissue]
+      encoding[tissue_idx] = 1.0
+
+      # Use ontology-derived organ/system for the ancestor
+      organ_indices = self.tissue_to_organ_indices.get(nearest_cz_tissue, [])
+      for organ_idx in organ_indices:
+        encoding[self.tissue_dim + organ_idx] = 1.0
+
+      system_indices = self.tissue_to_system_indices.get(nearest_cz_tissue, [])
+      for system_idx in system_indices:
+        encoding[self.tissue_dim + self.organ_dim + system_idx] = 1.0
+
+      return encoding
+
+    # Tier 3: Use manual fallback mapping if available
+    if tissue_id in FALLBACK_TISSUE_MAPPINGS:
+      mapping = FALLBACK_TISSUE_MAPPINGS[tissue_id]
+      mapped_tissue = mapping['tissue']
+
+      # Use mapped tissue if it's in CZ slim
+      if mapped_tissue in curated_tissues_set:
+        tissue_idx = self.tissue_to_idx[mapped_tissue]
+        encoding[tissue_idx] = 1.0
+
+      # Use fallback organ/system mappings
+      organ_indices = self.tissue_to_organ_indices.get(mapped_tissue, [])
+      for organ_idx in organ_indices:
+        encoding[self.tissue_dim + organ_idx] = 1.0
+
+      system_indices = self.tissue_to_system_indices.get(mapped_tissue, [])
+      for system_idx in system_indices:
+        encoding[self.tissue_dim + self.organ_dim + system_idx] = 1.0
+
+      return encoding
+
+    # No mapping found - return zero vector
+    return encoding
+
   def encode(self, tissues: pd.Series) -> torch.Tensor:
     """
     Encode a series of tissue terms to hierarchical one-hot vectors.
 
-    Uses efficient join-based approach:
-    1. Create mapping DataFrame (done once during init)
+    Uses efficient join-based approach with dynamic fallback:
+    1. Create mapping DataFrame for pre-computed encodings (curated + FALLBACK_TISSUE_MAPPINGS)
     2. Join tissues with pre-computed encodings
-    3. Convert to tensor
+    3. For unknown tissues, dynamically compute encoding using three-tier strategy
+    4. Convert to tensor
 
     Args:
         tissues: Pandas Series of tissue ontology term IDs (can be categorical)
@@ -289,17 +376,18 @@ class TissueEncoder:
     # Join with pre-computed encodings
     joined = tissue_df.join(self._encoding_df, on='tissue_id')
 
-    # Handle unknown tissues (fill with zeros)
+    # Handle unknown tissues using dynamic encoding
     encodings = joined['encoding'].values
 
     # Convert to list of arrays, handling NaN/None for unknown tissues
     encoding_list = []
-    for enc in encodings:
+    for i, enc in enumerate(encodings):
       if enc is not None and not (isinstance(enc, float) and np.isnan(enc)):
         encoding_list.append(enc)
       else:
-        # Unknown tissue - create zero vector
-        encoding_list.append(np.zeros(self.total_dim, dtype=np.float32))
+        # Tissue not in pre-computed DataFrame - compute dynamically
+        tissue_id = tissue_values.iloc[i]
+        encoding_list.append(self._encode_single_tissue(tissue_id))
 
     # Stack into array
     encoding_matrix = np.stack(encoding_list)
