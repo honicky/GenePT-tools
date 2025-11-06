@@ -109,10 +109,12 @@ class TissueEncoder:
 
     Creates a cache for fast lookup during encoding.
     Uses UBERON ontology to find ancestors of each tissue.
+    Also includes fallback mappings for tissues not in curated list.
     """
     self.tissue_to_organ_indices: Dict[str, List[int]] = {}
     self.tissue_to_system_indices: Dict[str, List[int]] = {}
 
+    # Build cache for curated tissues
     for tissue in self.tissue_to_idx.keys():
       # Get all ancestors of this tissue
       ancestors = self.ontology_parser.get_term_ancestors(
@@ -139,18 +141,47 @@ class TissueEncoder:
       self.tissue_to_organ_indices[tissue] = organ_indices
       self.tissue_to_system_indices[tissue] = system_indices
 
+    # Add fallback mappings (for tissues not in curated list but with manual mappings)
+    for original_id, mapping in FALLBACK_TISSUE_MAPPINGS.items():
+      mapped_tissue = mapping['tissue']
+
+      # Map organ if specified
+      organ_indices = []
+      if mapping['organ'] and mapping['organ'] in self.organ_to_idx:
+        organ_indices = [self.organ_to_idx[mapping['organ']]]
+
+      # Map systems if specified
+      system_indices = []
+      for sys_id in mapping['systems']:
+        if sys_id in self.system_to_idx:
+          system_indices.append(self.system_to_idx[sys_id])
+
+      # Store under the mapped tissue ID
+      # If mapped_tissue is in curated list, it already has a mapping (don't override)
+      # If not, create new mapping for the fallback tissue
+      if mapped_tissue not in self.tissue_to_organ_indices:
+        self.tissue_to_organ_indices[mapped_tissue] = organ_indices
+        self.tissue_to_system_indices[mapped_tissue] = system_indices
+
   def _build_encoding_dataframe(self) -> pd.DataFrame:
     """
     Pre-compute encoding vectors for all tissues as a DataFrame.
 
+    Includes:
+    1. Curated CZ slim tissues (direct encoding)
+    2. Fallback mappings for tissues not in CZ slim list:
+       - Use nearest CZ slim ancestor tissue if found
+       - Otherwise use fallback organ/system mappings
+
     Returns:
         DataFrame with tissue_id as index and encoding columns
-        Shape: (81 tissues, 126 encoding dimensions)
+        Shape: (81 curated + fallback tissues, 126 encoding dimensions)
     """
     rows = []
+    curated_tissues_set = set(self.tissue_to_idx.keys())
 
+    # Encode curated CZ slim tissues
     for tissue_id in sorted(self.tissue_to_idx.keys()):
-      # Create encoding vector for this tissue
       encoding = np.zeros(self.total_dim, dtype=np.float32)
 
       # Tissue one-hot
@@ -168,6 +199,50 @@ class TissueEncoder:
         encoding[self.tissue_dim + self.organ_dim + system_idx] = 1.0
 
       rows.append({'tissue_id': tissue_id, 'encoding': encoding})
+
+    # Add fallback mappings for tissues not in CZ slim list
+    for original_id, mapping in FALLBACK_TISSUE_MAPPINGS.items():
+      encoding = np.zeros(self.total_dim, dtype=np.float32)
+      mapped_tissue = mapping['tissue']
+
+      # Try to find CZ slim ancestor tissue via ontology
+      nearest_cz_tissue = None
+      try:
+        ancestors = self.ontology_parser.get_term_ancestors(original_id, include_self=False)
+        # Find first (nearest) ancestor that's in CZ slim list
+        for ancestor in ancestors:
+          if ancestor in curated_tissues_set:
+            nearest_cz_tissue = ancestor
+            break
+      except:
+        pass
+
+      # Use nearest CZ slim ancestor if found
+      if nearest_cz_tissue:
+        tissue_idx = self.tissue_to_idx[nearest_cz_tissue]
+        encoding[tissue_idx] = 1.0
+        # Use ontology-derived organ/system for the ancestor
+        organ_indices = self.tissue_to_organ_indices.get(nearest_cz_tissue, [])
+        system_indices = self.tissue_to_system_indices.get(nearest_cz_tissue, [])
+      else:
+        # No CZ slim ancestor found, use mapped tissue if it's in CZ slim
+        if mapped_tissue in curated_tissues_set:
+          tissue_idx = self.tissue_to_idx[mapped_tissue]
+          encoding[tissue_idx] = 1.0
+
+        # Use fallback organ/system mappings
+        organ_indices = self.tissue_to_organ_indices.get(mapped_tissue, [])
+        system_indices = self.tissue_to_system_indices.get(mapped_tissue, [])
+
+      # Apply organ multi-hot
+      for organ_idx in organ_indices:
+        encoding[self.tissue_dim + organ_idx] = 1.0
+
+      # Apply system multi-hot
+      for system_idx in system_indices:
+        encoding[self.tissue_dim + self.organ_dim + system_idx] = 1.0
+
+      rows.append({'tissue_id': original_id, 'encoding': encoding})
 
     return pd.DataFrame(rows).set_index('tissue_id')
 
@@ -425,3 +500,102 @@ def load_tissues_from_parquet(parquet_path: Path) -> pd.Series:
   """
   df = pd.read_parquet(parquet_path, columns=['tissue_ontology_term_id'])
   return df['tissue_ontology_term_id']
+
+
+# Fallback mappings for tissues not in CellxGene curated list
+# Maps original tissue IDs (CL or UBERON) to tissue/organ/system IDs
+FALLBACK_TISSUE_MAPPINGS = {
+    # CL (Cell Ontology) -> UBERON tissue mappings
+    'CL:0000084': {  # T cell
+        'tissue': 'UBERON:0000178',  # blood
+        'organ': None,
+        'systems': ['UBERON:0002390']  # hematopoietic system
+    },
+    'CL:0002328': {  # bronchial epithelial cell
+        'tissue': 'UBERON:0002048',  # lung
+        'organ': 'UBERON:0002048',  # lung
+        'systems': ['UBERON:0001004']  # respiratory system
+    },
+    'CL:0002334': {  # preadipocyte
+        'tissue': 'UBERON:0001013',  # adipose tissue
+        'organ': 'UBERON:0001013',  # adipose tissue
+        'systems': []
+    },
+    'CL:0000082': {  # epithelial cell of lung
+        'tissue': 'UBERON:0002048',  # lung
+        'organ': 'UBERON:0002048',  # lung
+        'systems': ['UBERON:0001004']  # respiratory system
+    },
+    'CL:0000115': {  # endothelial cell
+        'tissue': 'UBERON:0002049',  # vasculature
+        'organ': None,
+        'systems': ['UBERON:0001009', 'UBERON:0007798']  # circulatory system; cardiovascular system
+    },
+    'CL:0002335': {  # brown preadipocyte
+        'tissue': 'UBERON:0001348',  # brown adipose tissue
+        'organ': 'UBERON:0001013',  # adipose tissue
+        'systems': []
+    },
+    'CL:0002633': {  # respiratory basal cell
+        'tissue': 'UBERON:0002048',  # lung
+        'organ': 'UBERON:0002048',  # lung
+        'systems': ['UBERON:0001004']  # respiratory system
+    },
+    'CL:0000351': {  # trophoblast cell
+        'tissue': 'UBERON:0001987',  # placenta
+        'organ': 'UBERON:0001987',  # placenta
+        'systems': ['UBERON:0000990']  # reproductive system
+    },
+
+    # UBERON organ/system mappings (tissue stays same, add organ/system)
+    'UBERON:8480009': {  # tendon of semitendinosus
+        'tissue': 'UBERON:8480009',
+        'organ': None,
+        'systems': ['UBERON:0000383', 'UBERON:0001434']  # musculature of body; skeletal system
+    },
+    'UBERON:0001040': {  # yolk sac
+        'tissue': 'UBERON:0001040',
+        'organ': None,
+        'systems': ['UBERON:0000922']  # embryo
+    },
+    'UBERON:0007650': {  # esophagogastric junction
+        'tissue': 'UBERON:0007650',
+        'organ': 'UBERON:0001043',  # esophagus
+        'systems': ['UBERON:0001007']  # digestive system
+    },
+    'UBERON:0002103': {  # hindlimb
+        'tissue': 'UBERON:0002103',
+        'organ': None,
+        'systems': ['UBERON:0000383', 'UBERON:0001434']  # musculature of body; skeletal system
+    },
+    'UBERON:0001851': {  # cortex
+        'tissue': 'UBERON:0001851',
+        'organ': 'UBERON:0000955',  # brain
+        'systems': ['UBERON:0001017', 'UBERON:0001016']  # central nervous system; nervous system
+    },
+    'UBERON:0016435': {  # chest wall
+        'tissue': 'UBERON:0016435',
+        'organ': None,
+        'systems': ['UBERON:0000383']  # musculature of body
+    },
+    'UBERON:0000403': {  # scalp
+        'tissue': 'UBERON:0000403',
+        'organ': 'UBERON:0002097',  # skin of body
+        'systems': []
+    },
+    'UBERON:0002102': {  # forelimb
+        'tissue': 'UBERON:0002102',
+        'organ': None,
+        'systems': ['UBERON:0000383', 'UBERON:0001434']  # musculature of body; skeletal system
+    },
+    'UBERON:0035210': {  # paracolic gutter
+        'tissue': 'UBERON:0035210',
+        'organ': None,
+        'systems': ['UBERON:0001007']  # digestive system
+    },
+    'UBERON:0000033': {  # head
+        'tissue': 'UBERON:0000033',
+        'organ': None,
+        'systems': ['UBERON:0001016', 'UBERON:0001032']  # nervous system; sensory system
+    },
+}
