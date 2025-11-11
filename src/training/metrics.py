@@ -125,68 +125,6 @@ def inference_all(
   return y_pred, all_preds
 
 
-def evaluate(
-    model: torch.nn.Module,
-    X: np.ndarray,
-    y: np.ndarray,
-    num_classes: int,
-    batch_size: int = 1024,
-    device: Optional[torch.device] = None,
-    k_values: Tuple[int, ...] = (2, 5, 10)
-) -> Dict[str, float]:
-  """Evaluate model on validation data.
-  
-  This matches the evaluation function from the notebook.
-  
-  Args:
-    model: PyTorch model
-    X: Input features
-    y: True labels
-    num_classes: Total number of classes
-    batch_size: Batch size for inference
-    device: Device to run inference on
-    k_values: Values of k for recall@k, MRR@k, DCG@k metrics
-    
-  Returns:
-    Dictionary of metric names to values
-  """
-  if device is None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-  
-  # Ensure y is numpy array
-  y = np.asarray(y)
-  
-  # Handle empty dataset
-  if len(X) == 0 or len(y) == 0:
-    return {}
-  
-  # Get predictions
-  y_pred, all_preds = inference_all(model, X, batch_size, device)
-  
-  # Calculate metrics
-  metrics = {}
-  
-  # Log loss
-  metrics["logloss"] = log_loss(y, all_preds, labels=np.arange(num_classes))
-  
-  # Classification metrics
-  metrics["macro_f1"] = f1_score(y, y_pred, average='macro', labels=np.arange(num_classes), zero_division=0)
-  metrics["macro_precision"] = precision_score(
-    y, y_pred, average='macro', labels=np.arange(num_classes), zero_division=0
-  )
-  metrics["macro_recall"] = recall_score(
-    y, y_pred, average='macro', labels=np.arange(num_classes), zero_division=0
-  )
-  
-  # Ranking metrics at different k values
-  for k in k_values:
-    metrics[f"recall_at_{k}"] = recall_at_k(y, all_preds, k)
-    metrics[f"mrr_at_{k}"] = mrr_at_k(y, all_preds, k)
-    metrics[f"dcg_at_{k}"] = dcg_at_k(y, all_preds, k)
-  
-  return metrics
-
-
 def evaluate_and_return_predictions(
     model: torch.nn.Module,
     X: np.ndarray,
@@ -196,8 +134,11 @@ def evaluate_and_return_predictions(
     device: Optional[torch.device] = None,
     k_values: Tuple[int, ...] = (2, 5, 10)
 ) -> Tuple[Dict[str, float], np.ndarray, np.ndarray, np.ndarray]:
-  """Evaluate model and return predictions along with metrics.
-  
+  """Base evaluation function that runs inference once and calculates standard metrics.
+
+  This is the base function that all other evaluation functions should call.
+  It performs a single inference pass and calculates all standard metrics.
+
   Args:
     model: PyTorch model
     X: Input features
@@ -206,17 +147,44 @@ def evaluate_and_return_predictions(
     batch_size: Batch size for inference
     device: Device to run inference on
     k_values: Values of k for recall@k, MRR@k, DCG@k metrics
-    
+
   Returns:
     Tuple of (metrics dict, true labels, predicted probabilities, predicted labels)
   """
   if device is None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-  
-  metrics = evaluate(model, X, y, num_classes, batch_size, device, k_values)
-  _, all_preds = inference_all(model, X, batch_size, device)
-  y_pred = all_preds.argmax(axis=1)
-  
+
+  # Ensure y is numpy array
+  y = np.asarray(y)
+
+  # Handle empty dataset
+  if len(X) == 0 or len(y) == 0:
+    return {}, y, np.array([]), np.array([])
+
+  # Get predictions (single inference pass)
+  y_pred, all_preds = inference_all(model, X, batch_size, device)
+
+  # Calculate standard metrics
+  metrics = {}
+
+  # Log loss
+  metrics["logloss"] = log_loss(y, all_preds, labels=np.arange(num_classes))
+
+  # Classification metrics (computed over classes present in y)
+  metrics["macro_f1"] = f1_score(y, y_pred, average='macro', zero_division=0)
+  metrics["macro_precision"] = precision_score(
+    y, y_pred, average='macro', zero_division=0
+  )
+  metrics["macro_recall"] = recall_score(
+    y, y_pred, average='macro', zero_division=0
+  )
+
+  # Ranking metrics at different k values
+  for k in k_values:
+    metrics[f"recall_at_{k}"] = recall_at_k(y, all_preds, k)
+    metrics[f"mrr_at_{k}"] = mrr_at_k(y, all_preds, k)
+    metrics[f"dcg_at_{k}"] = dcg_at_k(y, all_preds, k)
+
   return metrics, y, all_preds, y_pred
 
 
@@ -226,60 +194,52 @@ def evaluate_with_hierarchy(
     y: np.ndarray,
     cell_types: List[str],
     cell_type_to_idx: Dict[str, int],
-    ontology_graph: Optional[nx.DiGraph] = None,
+    ontology_graph: nx.DiGraph,
     batch_size: int = 1024,
     device: Optional[torch.device] = None,
     k_values: Tuple[int, ...] = (2, 5, 10)
-) -> Dict[str, float]:
+) -> Tuple[Dict[str, float], np.ndarray, np.ndarray, np.ndarray]:
   """Evaluate model with both standard and hierarchical metrics.
-  
-  This function extends the standard evaluation to include hierarchical
-  precision, recall, and F1 scores based on cell type ontology relationships.
-  
+
+  Calls evaluate_and_return_predictions to get standard metrics, then adds
+  hierarchical precision, recall, and F1 scores based on cell type ontology.
+
   Args:
     model: PyTorch model
     X: Input features
     y: True labels (indices)
     cell_types: List of cell type names
     cell_type_to_idx: Mapping from cell type names to indices
-    ontology_graph: NetworkX directed graph of cell type relationships
+    ontology_graph: NetworkX directed graph of cell type relationships (REQUIRED)
     batch_size: Batch size for inference
     device: Device to run inference on
     k_values: Values of k for recall@k, MRR@k, DCG@k metrics
-    
+
   Returns:
-    Dictionary of metric names to values, including hierarchical metrics
-    if ontology_graph is provided
+    Tuple of (metrics dict, true labels, predicted probabilities, predicted labels)
   """
-  if device is None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-  
-  # Handle empty dataset
-  if len(X) == 0 or len(y) == 0:
-    return {}
-  
-  # Get standard metrics
+  # Get standard metrics from base evaluation function
   num_classes = len(cell_types)
-  metrics = evaluate(model, X, y, num_classes, batch_size, device, k_values)
-  
-  # If no ontology graph provided, return standard metrics only
-  if ontology_graph is None:
-    return metrics
-  
-  # Get predictions for hierarchical evaluation
-  _, all_preds = inference_all(model, X, batch_size, device)
-  y_pred = all_preds.argmax(axis=1)
-  
+  metrics, y_true, all_preds, y_pred = evaluate_and_return_predictions(
+    model=model,
+    X=X,
+    y=y,
+    num_classes=num_classes,
+    batch_size=batch_size,
+    device=device,
+    k_values=k_values
+  )
+
   # Convert indices to cell type labels
-  y_true_labels = [cell_types[idx] for idx in y]
+  y_true_labels = [cell_types[idx] for idx in y_true]
   y_pred_labels = [cell_types[idx] for idx in y_pred]
-  
+
   # Calculate hierarchical metrics
   hierarchical_metrics = calculate_hierarchical_f_score(
     y_true_labels, y_pred_labels, ontology_graph
   )
-  
-  # Combine all metrics
+
+  # Add to metrics dict
   metrics.update(hierarchical_metrics)
-  
-  return metrics
+
+  return metrics, y_true, all_preds, y_pred

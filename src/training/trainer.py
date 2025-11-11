@@ -18,7 +18,7 @@ from ..data_loading.s3_dataset import S3ParquetStreamDataset
 from ..data_loading.pt_dataset import PTFileStreamDataset
 from ..data_loading.composable_dataset import ComposableTrainingDataset
 from ..utils.checkpoint import CheckpointManager, load_checkpoint, save_best_model, save_checkpoint
-from .metrics import evaluate, evaluate_with_hierarchy
+from .metrics import evaluate_and_return_predictions, evaluate_with_hierarchy
 from .config import TrainingConfig
 from .ontology import CellOntologyManager
 
@@ -341,14 +341,37 @@ class MLPTrainer:
       X_combined = np.concatenate(X_list, axis=0).astype(np.float32)
       y_combined = np.concatenate(y_list, axis=0).astype(np.int64)
 
-      # Filter to valid cell types (should already be filtered by code_remapping)
-      # But double-check that y values are in range
+      print(f"\nTest data loaded (before filtering): {len(y_combined):,} samples")
+
+      # Filter to valid cell types
+      # The dataset already filters during iteration, but we double-check here
+      # Valid samples must have:
+      # 1. y >= 0 (in vocabulary and passes threshold)
+      # 2. y < num_classes (valid class index)
       valid_mask = (y_combined >= 0) & (y_combined < self.num_classes)
+
+      # Show filtering stats
+      total_samples = len(y_combined)
+      valid_samples = valid_mask.sum()
+      filtered_samples = total_samples - valid_samples
+
+      if filtered_samples > 0:
+        print(f"⚠️  Filtered out {filtered_samples:,} samples ({filtered_samples/total_samples*100:.1f}%):")
+
+        # Breakdown by reason
+        negative_y = (y_combined < 0).sum()
+        out_of_range = (y_combined >= self.num_classes).sum()
+
+        if negative_y > 0:
+          print(f"    - {negative_y:,} with y < 0 (not in vocabulary or below threshold)")
+        if out_of_range > 0:
+          print(f"    - {out_of_range:,} with y >= {self.num_classes} (out of range)")
+
       self.X_val_120k = X_combined[valid_mask]
       self.y_val_120k = y_combined[valid_mask]
 
-      print(f"Loaded validation set: {self.X_val_120k.shape}")
-      print(f"Valid samples: {valid_mask.sum()} / {len(valid_mask)}")
+      print(f"✓ Valid test samples: {valid_samples:,} ({valid_samples/total_samples*100:.1f}%)")
+      print(f"  Shape: {self.X_val_120k.shape}")
 
       # Create 5k subset
       if len(self.X_val_120k) > 5000:
@@ -580,6 +603,12 @@ class MLPTrainer:
         # Commit with an empty log to finalize this step
         self.wandb_run.log({}, step=self.global_step, commit=True)
 
+      # Periodic garbage collection to prevent memory fragmentation
+      # Run every 100 steps to release accumulated objects in workers and main process
+      if batch_idx % 100 == 0 and batch_idx > 0:
+        import gc
+        gc.collect()
+
       # Reset iterator timer for next batch's data loading measurement
       if self.config.profile_timing:
         iter_start = time.time()
@@ -665,8 +694,8 @@ class MLPTrainer:
     if self.ontology_graph is not None:
       # Create cell type to index mapping
       cell_type_to_idx = {ct: i for i, ct in enumerate(self.cell_types[:self.num_classes])}
-      
-      metrics = evaluate_with_hierarchy(
+
+      metrics, _, _, _ = evaluate_with_hierarchy(
         model=self.model,
         X=X,
         y=y,
@@ -677,8 +706,8 @@ class MLPTrainer:
         device=self.device
       )
     else:
-      # Standard evaluation
-      metrics = evaluate(
+      # Standard evaluation without hierarchy
+      metrics, _, _, _ = evaluate_and_return_predictions(
         model=self.model,
         X=X,
         y=y,
@@ -948,12 +977,14 @@ class MLPTrainer:
       )
     
     # Create dataloader
+    # Set prefetch_factor=None (default=2) to reduce memory pressure
+    # With 377 files shuffled randomly, prefetching causes RAM to fill quickly
     dataloader = DataLoader(
       dataset,
       batch_size=None,  # Dataset returns batches
       num_workers=self.config.num_workers,
       pin_memory=True if self.device.type == 'cuda' else False,
-      prefetch_factor=2 if self.config.num_workers > 0 else None,
+      prefetch_factor=None,  # Disable prefetch to prevent memory buildup with many files
       persistent_workers=True if self.config.num_workers > 0 else False
     )
     

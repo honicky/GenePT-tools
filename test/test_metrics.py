@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 from src.training.metrics import (
   mrr_at_k, dcg_at_k, recall_at_k,
-  inference_batch, inference_all, evaluate
+  inference_batch, inference_all, evaluate_and_return_predictions
 )
 
 
@@ -218,7 +218,7 @@ class TestEvaluate:
     y = np.random.randint(0, num_classes, n_samples)
     
     # Evaluate
-    metrics = evaluate(
+    metrics, _, _, _ = evaluate_and_return_predictions(
       model=model,
       X=X,
       y=y,
@@ -286,12 +286,13 @@ class TestEvaluate:
     model.eval()
     
     # Evaluate
-    metrics = evaluate(
+    metrics, _, _, _ = evaluate_and_return_predictions(
       model=model,
       X=X,
       y=y,
       num_classes=num_classes,
-      batch_size=16
+      batch_size=16,
+      device=torch.device("cpu")  # Explicitly use CPU to match model
     )
     
     # With perfect predictions, recall metrics should be 1.0
@@ -316,7 +317,7 @@ class TestEvaluate:
     y = np.random.randint(0, 5, 20)
     
     # Evaluate on CUDA
-    metrics = evaluate(
+    metrics, _, _, _ = evaluate_and_return_predictions(
       model=model,
       X=X,
       y=y,
