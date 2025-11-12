@@ -101,12 +101,7 @@ def parse_args():
     default=1536,
     help="Number of GenePT dimensions to use (default: 1536, use 0 for all 3072)"
   )
-  parser.add_argument(
-    "--cell-count-threshold",
-    type=int,
-    default=5000,
-    help="Minimum number of samples per cell type (default: 5000, use 0 for no filtering)"
-  )
+  # cell-count-threshold removed - must be specified in tuning config fixed_params
   parser.add_argument(
     "--cell-counts-file",
     type=Path,
@@ -313,13 +308,6 @@ def parse_args():
     action="store_true",
     help="Enable verbose output"
   )
-  parser.add_argument(
-    "--cell-types-file",
-    type=Path,
-    default=None,
-    help="Path to file containing cell types and codes (optional)"
-  )
-  
   # Hierarchical metrics parameters
   parser.add_argument(
     "--enable-hierarchical-metrics",
@@ -390,6 +378,43 @@ def load_cell_types(cell_types_file: Path = None):
     print("Warning: Using simplified cell type list. Provide --cell-types-file for full list.")
     cell_types = [f"type_{i}" for i in range(377)]  # Placeholder
     cell_type_codes = pd.Series(range(377), index=cell_types)
+
+  return cell_types, cell_type_codes
+
+
+def load_cell_types_from_counts(cell_counts_file):
+  """Load cell types directly from cell counts file.
+
+  The cell_counts.csv file contains all cell types with their counts.
+  This serves as the canonical source for cell type ordering.
+
+  Args:
+    cell_counts_file: Path to CSV file with columns (cell_type, cell_count)
+                     Can be string or Path object
+
+  Returns:
+    Tuple of (cell_types list, cell_type_codes Series)
+  """
+  # Convert to Path if string
+  cell_counts_file = Path(cell_counts_file)
+
+  if not cell_counts_file.exists():
+    raise FileNotFoundError(f"Cell counts file not found: {cell_counts_file}")
+
+  # Load cell counts file
+  counts_df = pd.read_csv(cell_counts_file)
+
+  # Verify required columns
+  if 'cell_type' not in counts_df.columns:
+    raise ValueError(f"cell_counts_file must have 'cell_type' column")
+  if 'cell_count' not in counts_df.columns:
+    raise ValueError(f"cell_counts_file must have 'cell_count' column")
+
+  # Extract cell types (order in file defines the canonical ordering)
+  cell_types = counts_df['cell_type'].tolist()
+
+  # Create sequential codes from 0 to n-1
+  cell_type_codes = pd.Series(range(len(cell_types)), index=cell_types)
 
   return cell_types, cell_type_codes
 
@@ -575,10 +600,6 @@ def main():
   """Main training function."""
   args = parse_args()
 
-  # Load cell types
-  cell_types, cell_type_codes = load_cell_types(args.cell_types_file)
-  print(f"Loaded {len(cell_types)} cell types, training on {len(cell_type_codes)} codes")
-
   # If using tuning mode, load config early to get filtering parameters
   tuning_config_dict = None
   if args.tuning_config:
@@ -588,32 +609,40 @@ def main():
 
     # Override args with fixed_params from tuning config if not specified on command line
     fixed_params = tuning_config_dict.get('fixed_params', {})
-    if args.cell_count_threshold == 0 and 'cell_count_threshold' in fixed_params:
-      args.cell_count_threshold = fixed_params['cell_count_threshold']
     if args.cell_counts_file is None and 'cell_counts_file' in fixed_params:
       args.cell_counts_file = fixed_params['cell_counts_file']
 
-  # Reload cell types with proper file if now available
-  if args.cell_count_threshold > 0 and args.cell_counts_file:
-    # When filtering is enabled, we need the full canonical cell types list
-    # Use cell_types.csv from same directory as cell_counts.csv
-    if args.cell_types_file is None:
-      counts_path = Path(args.cell_counts_file)
-      cell_types_path = counts_path.parent / "cell_types.csv"
-      if cell_types_path.exists():
-        args.cell_types_file = cell_types_path
-        cell_types, cell_type_codes = load_cell_types(args.cell_types_file)
-        print(f"Reloaded cell types from {cell_types_path}: {len(cell_types)} types")
+    # cell_count_threshold must be specified in config (no CLI argument, no default)
+    if 'cell_count_threshold' not in fixed_params:
+      raise ValueError(
+        "cell_count_threshold must be specified in tuning config fixed_params. "
+        "Use 0 for no filtering."
+      )
+    cell_count_threshold = fixed_params['cell_count_threshold']
+  else:
+    # Non-tuning mode: cell_count_threshold must be specified
+    raise ValueError(
+      "cell_count_threshold is required. Use --tuning-config with fixed_params.cell_count_threshold specified."
+    )
+
+  # Load cell types from cell_counts_file (required)
+  if args.cell_counts_file is None:
+    raise ValueError(
+      "Cell counts file is required. Specify via --cell-counts-file or in tuning config fixed_params."
+    )
+
+  cell_types, cell_type_codes = load_cell_types_from_counts(args.cell_counts_file)
+  print(f"Loaded {len(cell_types)} cell types from {args.cell_counts_file}")
 
   # Apply cell type filtering if threshold specified
   code_remapping = None
   mapping_df = None
-  if args.cell_count_threshold > 0 and args.cell_counts_file:
+  if cell_count_threshold > 0:
     filtered_cell_types, filtered_codes, code_remapping, mapping_df = create_code_remapping(
       cell_types=cell_types,
       cell_type_codes=cell_type_codes,
       cell_counts_file=args.cell_counts_file,
-      min_count=args.cell_count_threshold
+      min_count=cell_count_threshold
     )
     # Use filtered cell types for training
     cell_types = filtered_cell_types
@@ -769,7 +798,7 @@ def main():
       embedding_types=args.embedding_types,
       genept_dims=genept_dims,
       # Cell type filtering
-      cell_count_threshold=args.cell_count_threshold,
+      cell_count_threshold=cell_count_threshold,
       cell_counts_file=args.cell_counts_file,
       # Model
       n_hidden_layers=args.n_hidden_layers,

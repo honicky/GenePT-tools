@@ -33,7 +33,7 @@ class TrainingConfig:
   test_metadata_suffix: str = "_test_v1"  # Suffix for metadata test data directory
 
   # Cell type filtering
-  cell_count_threshold: int = 5000  # Minimum samples per cell type (0 = no filtering)
+  cell_count_threshold: int = 10000  # Minimum samples per cell type (0 = no filtering)
   cell_counts_file: Optional[Path] = None  # CSV with cell type counts (cell_type, cell_count)
   track_invalid_embeddings: bool = True  # Filter out rows with invalid embeddings (all-zero, NaN)
   
