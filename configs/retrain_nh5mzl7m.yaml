@@ -3,8 +3,8 @@
 
 optuna:
   study_name: "retrain_nh5mzl7m"
-  direction: "minimize"
-  metric: "val_logloss"
+  direction: "maximize"
+  metric: "val_hierarchical_f1"
 
 n_trials: 1  # Just one trial, not tuning
 
@@ -47,8 +47,8 @@ fixed_params:
   # Checkpointing - ENABLED
   local_checkpoints: true
   checkpoint_dir: "/data/GenePT-tools/checkpoints/nh5mzl7m_retrain"
-  best_model_metric: "logloss"
-  best_model_mode: "min"
+  best_model_metric: "hierarchical_f1"
+  best_model_mode: "max"
 
   # System
   device: "cuda"
