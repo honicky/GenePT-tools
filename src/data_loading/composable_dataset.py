@@ -95,6 +95,13 @@ class ComposableTrainingDataset(IterableDataset):
         self.seed = seed
         self.verbose = verbose
 
+        # Per-embedding-type scaling factors (measured from raw embedding distributions)
+        # Each embedding type is scaled to have std ~1.0 independently
+        self.embedding_scales = {
+            'genept': 0.021,  # Typical std of raw GenePT embeddings
+            'scgpt': 0.044,   # Typical std of raw scGPT embeddings
+        }
+
         # Test mode parameters
         self.is_test_mode = is_test_mode
         self.test_genept_suffix = test_genept_suffix
@@ -356,6 +363,11 @@ class ComposableTrainingDataset(IterableDataset):
                     f"All embedding types must have identical observation_joinid order."
                 )
 
+        # Apply per-embedding-type scaling (same as training data)
+        for emb_type in embeddings:
+            if emb_type in self.embedding_scales:
+                embeddings[emb_type] = embeddings[emb_type] / self.embedding_scales[emb_type]
+
         # Concatenate embeddings (exclude metadata)
         embedding_types_only = [t for t in self.embedding_types if t != 'metadata']
         X_list = [embeddings[t] for t in embedding_types_only if t in embeddings]
@@ -414,6 +426,10 @@ class ComposableTrainingDataset(IterableDataset):
             # which support column-level access (see parquet loading above).
             if emb_type == 'genept' and self.genept_dims is not None:
                 X = X[:, :self.genept_dims]
+
+            # Scale embedding to have std ~1.0 (normalize each type independently)
+            if emb_type in self.embedding_scales:
+                X = X / self.embedding_scales[emb_type]
 
             embeddings[emb_type] = X
             hashes[emb_type] = batch_data['row_hash']

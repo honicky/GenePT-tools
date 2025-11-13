@@ -1,0 +1,71 @@
+# Retrain run nh5mzl7m with 3 epochs and checkpoint saving
+# Optuna config format with fixed params
+
+optuna:
+  study_name: "retrain_nh5mzl7m"
+  direction: "minimize"
+  metric: "val_logloss"
+
+n_trials: 1  # Just one trial, not tuning
+
+# Empty hyperparameters section (required but not used)
+hyperparameters: {}
+
+fixed_params:
+  # Data
+  use_composable_dataset: true
+  base_data_dir: "/localdata/training_data"
+  embedding_types: ["genept", "scgpt", "metadata"]
+  genept_dims: 1536
+  load_validation_data: true
+
+  # Cell type filtering
+  cell_count_threshold: 10000
+  cell_counts_file: "/data/batch-jobs/cell_counts.csv"
+  track_invalid_embeddings: true
+
+  # Training
+  epochs: 3
+  batch_size: 4096
+  label_smoothing: 0
+
+  # Model architecture (from run nh5mzl7m)
+  n_hidden_layers: 4
+  dropout: 0.12185044679982156
+
+  # Optimizer (from run nh5mzl7m)
+  optimizer_type: "adam"
+  learning_rate: 2.2135842889834922e-05
+  weight_decay: 3.373172592601994e-05
+  lr_scheduler: "none"
+
+  # Evaluation
+  eval_every_n_batches: 50
+  eval_full_every_n_batches: 250
+  checkpoint_every_n_batches: 250
+
+  # Checkpointing - ENABLED
+  local_checkpoints: true
+  checkpoint_dir: "/data/GenePT-tools/checkpoints/nh5mzl7m_retrain"
+  best_model_metric: "logloss"
+  best_model_mode: "min"
+
+  # System
+  device: "cuda"
+  num_workers: 2
+  mixed_precision: false
+
+  # Output
+  wandb_project: "cellxgene-metadata-retrain"
+  wandb_save_artifacts: false
+  profile_timing: true
+
+  # Metrics
+  enable_hierarchical_metrics: true
+
+  # Data loading
+  shuffle_files_per_epoch: false
+  shuffle_within_files: true
+  seed: 4201
+  verbose: true
+

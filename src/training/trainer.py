@@ -447,6 +447,28 @@ class MLPTrainer:
         print(f"[PROFILING] profile_timing = {self.config.profile_timing}")
       self._profiling_debug_printed = True
 
+    # Debug: Check input data on first batch
+    if not hasattr(self, '_input_debug_printed'):
+      if self.config.verbose:
+        print(f"\n[INPUT DEBUG] First batch:")
+        print(f"  X shape: {X.shape}")
+        print(f"  X mean: {X.mean().item():.6f}, std: {X.std().item():.6f}")
+        print(f"  X min: {X.min().item():.6f}, max: {X.max().item():.6f}")
+        print(f"  X sample[0,:10]: {X[0,:10].tolist()}")
+        print(f"  y shape: {y.shape}")
+        print(f"  y unique values (first 20): {torch.unique(y)[:20].tolist()}")
+
+        # Show what these labels actually mean
+        print(f"  Sample labels (code -> cell type):")
+        for i in range(min(10, len(y))):
+          code = y[i].item()
+          if 0 <= code < len(self.cell_types):
+            cell_type = self.cell_types[code]
+            print(f"    y[{i}] = {code:3d} -> '{cell_type}'")
+          else:
+            print(f"    y[{i}] = {code:3d} -> OUT_OF_RANGE")
+      self._input_debug_printed = True
+
     if self.config.profile_timing:
       # Move to device
       t0 = time.time()
@@ -481,6 +503,31 @@ class MLPTrainer:
 
       loss.backward()
       self.optimizer.step()
+
+    # Debug: Check gradients and outputs on first batch
+    if not hasattr(self, '_gradient_debug_printed'):
+      if self.config.verbose:
+        print(f"\n[GRADIENT DEBUG] First batch after update:")
+        print(f"  Loss: {loss.item():.6f}")
+        print(f"  outputs shape: {outputs.shape}")
+        print(f"  outputs mean: {outputs.mean().item():.6f}, std: {outputs.std().item():.6f}")
+        print(f"  outputs sample[0,:10]: {outputs[0,:10].detach().cpu().tolist()}")
+
+        # Check predictions
+        preds = outputs.argmax(dim=1)
+        print(f"  predictions (first 20): {preds[:20].cpu().tolist()}")
+        print(f"  ground truth (first 20): {y[:20].cpu().tolist()}")
+        print(f"  unique predictions: {torch.unique(preds).cpu().tolist()[:20]}")
+
+        # Check gradients
+        first_param = next(self.model.parameters())
+        if first_param.grad is not None:
+          print(f"  first param grad mean: {first_param.grad.mean().item():.6e}, std: {first_param.grad.std().item():.6e}")
+          print(f"  first param grad max: {first_param.grad.abs().max().item():.6e}")
+        else:
+          print(f"  WARNING: No gradients computed!")
+
+      self._gradient_debug_printed = True
 
     return loss.item(), timings
   
@@ -527,6 +574,21 @@ class MLPTrainer:
 
       batch_time = time.time() - batch_start
       batch_times.append(batch_time)
+
+      # Debug: Check predictions periodically
+      if self.config.verbose and batch_idx > 0 and batch_idx % 100 == 0:
+        self.model.eval()
+        with torch.no_grad():
+          X_gpu = X.to(self.device)
+          outputs = self.model(X_gpu)
+          preds = outputs.argmax(dim=1)
+          unique_preds = torch.unique(preds)
+          print(f"\n[BATCH {batch_idx} DEBUG]")
+          print(f"  Unique predictions: {len(unique_preds)} classes")
+          if len(unique_preds) <= 5:
+            print(f"  WARNING: Model only predicting {len(unique_preds)} classes!")
+            print(f"  Predicted classes: {unique_preds.cpu().tolist()}")
+        self.model.train()
       
       # Update progress bar with loss and any validation metrics
       postfix_dict = {'loss': f'{loss:.4f}'}
@@ -570,6 +632,8 @@ class MLPTrainer:
       
       # Periodic evaluation on 5k validation set (threshold-based)
       if self.global_step >= self.next_eval_5k_step and self.X_val_5k is not None:
+        if self.config.verbose:
+          print(f"\n[Running val5k evaluation at step {self.global_step}]")
         val_metrics = self.evaluate_validation(use_5k=True)
         if val_metrics and 'logloss' in val_metrics:
           # Update progress bar postfix with validation metrics
@@ -674,10 +738,10 @@ class MLPTrainer:
   
   def evaluate_validation(self, use_5k: bool = True) -> Dict[str, float]:
     """Evaluate on validation set.
-    
+
     Args:
       use_5k: Whether to use 5k subset or full validation set
-      
+
     Returns:
       Dictionary of validation metrics
     """
@@ -689,13 +753,13 @@ class MLPTrainer:
       prefix = "val120k"
     else:
       return {}
-    
+
     # Evaluate with hierarchical metrics if available
     if self.ontology_graph is not None:
       # Create cell type to index mapping
       cell_type_to_idx = {ct: i for i, ct in enumerate(self.cell_types[:self.num_classes])}
 
-      metrics, _, _, _ = evaluate_with_hierarchy(
+      metrics, _, _, y_pred = evaluate_with_hierarchy(
         model=self.model,
         X=X,
         y=y,
@@ -707,7 +771,7 @@ class MLPTrainer:
       )
     else:
       # Standard evaluation without hierarchy
-      metrics, _, _, _ = evaluate_and_return_predictions(
+      metrics, _, _, y_pred = evaluate_and_return_predictions(
         model=self.model,
         X=X,
         y=y,
@@ -715,6 +779,40 @@ class MLPTrainer:
         batch_size=self.config.batch_size,
         device=self.device
       )
+
+    # Debug output: Show predictions vs ground truth for sample examples
+    if self.config.verbose and prefix == "val5k":
+      print(f"\n[DEBUG] Validation shapes: y={y.shape}, top1_preds={y_pred.shape}")
+      print(f"[DEBUG] Metrics from evaluation: {metrics}")
+
+      # Check if model is stuck predicting one class
+      unique_preds = np.unique(y_pred)
+      print(f"[DEBUG] Unique predictions in validation: {len(unique_preds)} classes")
+      if len(unique_preds) <= 5:
+        print(f"[DEBUG] WARNING: Model stuck! Only predicting: {unique_preds.tolist()}")
+
+        # Show what these predictions correspond to
+        for pred_code in unique_preds[:5]:
+          if 0 <= pred_code < len(self.cell_types):
+            print(f"  Code {pred_code} -> '{self.cell_types[pred_code]}'")
+
+        # Check the actual logits to understand why
+        self.model.eval()
+        with torch.no_grad():
+          X_sample = torch.tensor(X[:10], dtype=torch.float32).to(self.device)
+          logits = self.model(X_sample)
+          print(f"[DEBUG] Sample logits[0, :10]: {logits[0, :10].cpu().tolist()}")
+          print(f"[DEBUG] Sample logits[0, 70:80]: {logits[0, 70:80].cpu().tolist()}")
+          print(f"[DEBUG] Logits mean: {logits.mean().item():.6f}, std: {logits.std().item():.6f}")
+
+          # Show the top-5 logit positions for first sample
+          top5_vals, top5_idx = torch.topk(logits[0], 5)
+          print(f"[DEBUG] Top-5 logits for sample 0:")
+          for i, (val, idx) in enumerate(zip(top5_vals.cpu().tolist(), top5_idx.cpu().tolist())):
+            cell_type = self.cell_types[idx] if idx < len(self.cell_types) else "OUT_OF_RANGE"
+            print(f"    {i+1}. Code {idx} ({cell_type[:40]}): {val:.6f}")
+
+      self._print_validation_debug(y, y_pred, num_fixed=10, num_random=10)
     
     # Add prefix to metrics
     prefixed_metrics = {f"{prefix}_{k}": v for k, v in metrics.items()}
@@ -803,7 +901,91 @@ class MLPTrainer:
       self.checkpoint_manager.best_metric = new_best_value
 
     return prefixed_metrics
-  
+
+  def _print_validation_debug(self, y_true, y_pred, num_fixed=10, num_random=10):
+    """Print debug output showing predictions vs ground truth.
+
+    Args:
+      y_true: Ground truth labels (numpy array)
+      y_pred: Predicted labels (numpy array)
+      num_fixed: Number of fixed examples from start
+      num_random: Number of random examples
+    """
+    print("\n" + "="*80)
+    print("VALIDATION DEBUG: Predictions vs Ground Truth")
+    print("="*80)
+
+    # Show first num_fixed examples
+    print(f"\nFirst {num_fixed} examples:")
+    print(f"{'Idx':<6} {'True Code':<12} {'Pred Code':<12} {'True Label':<35} {'Pred Label':<35} {'Match'}")
+    print("-"*80)
+
+    for i in range(min(num_fixed, len(y_true))):
+      true_code = y_true[i]
+      pred_code = y_pred[i]
+
+      # Get cell type labels
+      if 0 <= true_code < len(self.cell_types):
+        true_label = self.cell_types[true_code]
+      else:
+        true_label = f"INVALID({true_code})"
+
+      if 0 <= pred_code < len(self.cell_types):
+        pred_label = self.cell_types[pred_code]
+      else:
+        pred_label = f"INVALID({pred_code})"
+
+      match = "✓" if true_code == pred_code else "✗"
+
+      # Truncate long labels
+      true_label_short = true_label[:32] + "..." if len(true_label) > 35 else true_label
+      pred_label_short = pred_label[:32] + "..." if len(pred_label) > 35 else pred_label
+
+      print(f"{i:<6} {true_code:<12} {pred_code:<12} {true_label_short:<35} {pred_label_short:<35} {match}")
+
+    # Show random examples
+    if num_random > 0 and len(y_true) > num_fixed:
+      print(f"\n{num_random} random examples:")
+      print(f"{'Idx':<6} {'True Code':<12} {'Pred Code':<12} {'True Label':<35} {'Pred Label':<35} {'Match'}")
+      print("-"*80)
+
+      # Sample random indices (excluding first num_fixed)
+      available_indices = list(range(num_fixed, len(y_true)))
+      import random
+      random_indices = random.sample(available_indices, min(num_random, len(available_indices)))
+
+      for i in random_indices:
+        true_code = y_true[i]
+        pred_code = y_pred[i]
+
+        # Get cell type labels
+        if 0 <= true_code < len(self.cell_types):
+          true_label = self.cell_types[true_code]
+        else:
+          true_label = f"INVALID({true_code})"
+
+        if 0 <= pred_code < len(self.cell_types):
+          pred_label = self.cell_types[pred_code]
+        else:
+          pred_label = f"INVALID({pred_code})"
+
+        match = "✓" if true_code == pred_code else "✗"
+
+        # Truncate long labels
+        true_label_short = true_label[:32] + "..." if len(true_label) > 35 else true_label
+        pred_label_short = pred_label[:32] + "..." if len(pred_label) > 35 else pred_label
+
+        print(f"{i:<6} {true_code:<12} {pred_code:<12} {true_label_short:<35} {pred_label_short:<35} {match}")
+
+    # Summary statistics
+    total = len(y_true)
+    correct = (y_true == y_pred).sum()
+    accuracy = correct / total if total > 0 else 0
+
+    print("\n" + "-"*80)
+    print(f"Summary: {correct}/{total} correct ({accuracy*100:.2f}% accuracy)")
+    print("="*80 + "\n")
+
   def load_checkpoint(self, checkpoint_path: Path):
     """Load from checkpoint."""
     print(f"Loading checkpoint from {checkpoint_path}")
