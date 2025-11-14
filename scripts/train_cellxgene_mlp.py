@@ -675,7 +675,7 @@ def main():
     )
     
     # Create trainer factory
-    def create_and_run_trainer(trial: optuna.Trial):
+    def create_trainer(trial: optuna.Trial):
       # Get suggested config
       config = manager.suggest_hyperparameters(trial)
       
@@ -732,7 +732,7 @@ def main():
     # Run optimization
     print(f"Starting optimization with n_trials={args.tuning_n_trials}, timeout={args.tuning_timeout}")
     manager.run_optimization(
-      trainer_factory=create_and_run_trainer,
+      trainer_factory=create_trainer,
       n_trials=args.tuning_n_trials,
       timeout=args.tuning_timeout
     )

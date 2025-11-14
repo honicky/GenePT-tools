@@ -641,6 +641,9 @@ class MLPTrainer:
           val_postfix['val_r@10'] = f"{val_metrics['recall_at_10']:.3f}"
           if 'hierarchical_f1' in val_metrics:
             val_postfix['val_hF1'] = f"{val_metrics['hierarchical_f1']:.3f}"
+          # Update progress bar immediately with validation metrics
+          postfix_dict.update(val_postfix)
+          pbar.set_postfix(postfix_dict)
         # Set next threshold
         self.next_eval_5k_step = self.global_step + self.config.eval_every_n_batches
       
@@ -654,11 +657,13 @@ class MLPTrainer:
           # Update with full validation metrics (overwrite the 5k metrics)
           val_postfix['val_loss'] = f"{val_metrics['logloss']:.3f}"
           val_postfix['val_r@10'] = f"{val_metrics['recall_at_10']:.3f}"
-          val_postfix['val_mrr'] = f"{val_metrics['mrr_at_10']:.3f}"
           if 'hierarchical_f1' in val_metrics:
             val_postfix['val_hF1'] = f"{val_metrics['hierarchical_f1']:.3f}"
           # Add a marker to show this is full validation
           val_postfix['full'] = "✓"
+          # Update progress bar immediately with validation metrics
+          postfix_dict.update(val_postfix)
+          pbar.set_postfix(postfix_dict)
         # Set next threshold
         self.next_eval_full_step = self.global_step + self.config.eval_full_every_n_batches
       

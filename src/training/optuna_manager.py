@@ -145,7 +145,7 @@ class OptunaManager:
       key=lambda x: x.get('priority', float('inf'))
     )
     
-    optuna_metric = self.config['optuna'].get('metric_to_optimize', 'val_loss')
+    optuna_metric = self.config['optuna'].get('metric', 'val120k_logloss')
     
     for cfg in best_configs:
       # Check if we should add this config
@@ -275,7 +275,7 @@ class OptunaManager:
           params[key] = run.config[key]
       
       # Get metric value
-      optuna_metric = self.config['optuna'].get('metric_to_optimize', 'val_loss')
+      optuna_metric = self.config['optuna'].get('metric', 'val120k_logloss')
       value = run.summary.get(optuna_metric)
       
       # Create trial
@@ -411,7 +411,7 @@ class OptunaManager:
     
     # Automatically set best model tracking to match Optuna optimization metric
     # This ensures consistency between hyperparameter optimization and model saving
-    optuna_metric = self.config['optuna'].get('metric_to_optimize', 'logloss')
+    optuna_metric = self.config['optuna'].get('metric', 'val120k_logloss')
     optuna_direction = self.config['optuna'].get('direction', 'minimize')
     
     # Warn if manually specified metrics conflict with Optuna settings
@@ -504,8 +504,7 @@ class OptunaManager:
         trainer = trainer_factory(trial)
         metrics = trainer.run()
 
-        # Get optimization metric - check both 'metric' and 'metric_to_optimize' fields
-        metric_name = self.config['optuna'].get('metric') or self.config['optuna'].get('metric_to_optimize', 'val_loss')
+        metric_name = self.config['optuna'].get('metric', 'val120k_logloss')
 
         # Try to get the metric value
         value = metrics.get(metric_name)
