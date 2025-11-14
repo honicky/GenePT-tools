@@ -88,16 +88,10 @@ class MLPTrainer:
     
     # Initialize loss function
     self.criterion = nn.CrossEntropyLoss()
-    
-    # Initialize checkpoint manager
-    self.checkpoint_manager = CheckpointManager(
-      checkpoint_dir=config.checkpoint_dir,
-      save_every_n_batches=config.checkpoint_every_n_batches,
-      keep_last_n=5,
-      track_metric='val_logloss',
-      metric_mode='min'
-    )
-    
+
+    # Checkpoint manager will be initialized after wandb (so we can add run ID to path)
+    self.checkpoint_manager = None
+
     # Training state
     self.start_epoch = 0
     self.start_batch = 0
@@ -124,7 +118,14 @@ class MLPTrainer:
     self.wandb_run = None
     if config.wandb_project is not None:
       self.init_wandb()
-    
+
+    # Update checkpoint_dir with wandb run ID if both wandb and checkpointing are enabled
+    if self.wandb_run is not None and config.local_checkpoints:
+      run_id = self.wandb_run.id
+      config.checkpoint_dir = Path(config.checkpoint_dir) / run_id
+      print(f"Checkpoints will be saved to: {config.checkpoint_dir}")
+      print(f"  WandB run ID: {run_id}")
+
     # Initialize ontology for hierarchical metrics
     self.ontology_graph = None
     if config.enable_hierarchical_metrics:
@@ -136,6 +137,16 @@ class MLPTrainer:
       except Exception as e:
         print(f"Warning: Could not load Cell Ontology: {e}")
         print("Continuing without hierarchical metrics")
+
+    # Initialize checkpoint manager (after wandb so path includes run ID)
+    if config.local_checkpoints:
+      self.checkpoint_manager = CheckpointManager(
+        checkpoint_dir=config.checkpoint_dir,
+        save_every_n_batches=config.checkpoint_every_n_batches,
+        keep_last_n=5,
+        track_metric='val_logloss',
+        metric_mode='min'
+      )
   
   def get_input_dim(self) -> int:
     """Calculate input dimension based on dataset configuration."""

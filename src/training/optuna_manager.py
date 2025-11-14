@@ -379,7 +379,7 @@ class OptunaManager:
       'eval_every_n_batches', 'eval_full_every_n_batches',
       'checkpoint_every_n_batches', 'device', 'num_workers',
       'seed', 'shuffle_files_per_epoch', 'shuffle_within_files',
-      'enable_hierarchical_metrics', 'ontology_cache_dir',
+      'enable_hierarchical_metrics', 'ontology_cache_dir', 'checkpoint_dir', 'resume_from',
       'start_batch_file', 'end_batch_file', 'max_steps_per_epoch',
       'wandb_save_artifacts', 'local_checkpoints',
       'wandb_project', 'wandb_entity', 'wandb_run_name',
