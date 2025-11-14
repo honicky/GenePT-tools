@@ -193,7 +193,7 @@ def parse_args():
   parser.add_argument(
     "--checkpoint-dir",
     type=Path,
-    default=Path("checkpoints"),
+    default=None,  # Changed from Path("checkpoints") to None to respect config file
     help="Directory to save checkpoints"
   )
   parser.add_argument(

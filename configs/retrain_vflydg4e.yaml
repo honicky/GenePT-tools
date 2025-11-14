@@ -1,0 +1,71 @@
+# Retrain run vflydg4e with 4 epochs
+# Original run: honicky/cellxgene-metadata-debug/runs/vflydg4e
+# Optuna config format with fixed params
+
+optuna:
+  study_name: "retrain_vflydg4e"
+  direction: "maximize"
+  metric: "val_hierarchical_f1"
+
+n_trials: 1  # Just one trial, not tuning
+
+# Empty hyperparameters section (required but not used)
+hyperparameters: {}
+
+fixed_params:
+  # Data
+  use_composable_dataset: true
+  base_data_dir: "/localdata/training_data"
+  embedding_types: ["genept", "scgpt", "metadata"]
+  genept_dims: 1536
+  load_validation_data: true
+
+  # Cell type filtering
+  cell_count_threshold: 10000
+  cell_counts_file: "/data/batch-jobs/cell_counts.csv"
+  track_invalid_embeddings: true
+
+  # Training
+  epochs: 4  # Changed from 2 to 4
+  batch_size: 4096
+  label_smoothing: 0
+
+  # Model architecture (from run vflydg4e)
+  n_hidden_layers: 6
+  dropout: 0.120219101104616
+
+  # Optimizer (from run vflydg4e)
+  optimizer_type: "adam"
+  learning_rate: 4.524905851001488e-05
+  weight_decay: 2.2549726800516855e-06
+  lr_scheduler: "none"
+
+  # Evaluation
+  eval_every_n_batches: 50
+  eval_full_every_n_batches: 250
+  checkpoint_every_n_batches: 250
+
+  # Checkpointing - ENABLED
+  local_checkpoints: true
+  checkpoint_dir: "/data/GenePT-tools/checkpoints/vflydg4e_retrain"
+  best_model_metric: "hierarchical_f1"
+  best_model_mode: "max"
+
+  # System
+  device: "cuda"
+  num_workers: 2
+  mixed_precision: false
+
+  # Output
+  wandb_project: "cellxgene-metadata-retrain"
+  wandb_save_artifacts: false
+  profile_timing: true
+
+  # Metrics
+  enable_hierarchical_metrics: true
+
+  # Data loading
+  shuffle_files_per_epoch: true
+  shuffle_within_files: true
+  seed: 4201
+  verbose: true

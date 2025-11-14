@@ -360,10 +360,10 @@ class OptunaManager:
   
   def _create_training_config(self, params: Dict) -> TrainingConfig:
     """Create TrainingConfig from parameters.
-    
+
     Args:
       params: All parameters (fixed + suggested)
-      
+
     Returns:
       TrainingConfig instance
     """
@@ -403,7 +403,7 @@ class OptunaManager:
     for field in path_fields:
       if field in params and params[field] is not None:
         config_kwargs[field] = Path(params[field])
-    
+
     # Set epochs for quick evaluation during tuning
     # Only override if not specified in fixed_params
     if 'epochs' not in params:
