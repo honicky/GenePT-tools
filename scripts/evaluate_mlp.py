@@ -62,6 +62,56 @@ def load_cell_types_from_counts(cell_counts_file):
   return cell_types, cell_type_codes
 
 
+def map_tissue_to_cz_slim(tissue_id: str) -> Optional[str]:
+  """Map arbitrary tissue ID to CZ slim tissue using three-tier strategy.
+
+  Uses the same logic as TissueEncoder:
+  Tier 1: Return as-is if already in CZ slim
+  Tier 2: Find nearest CZ slim ancestor via ontology
+  Tier 3: Use manual fallback mapping
+
+  Args:
+    tissue_id: Tissue ontology term ID (UBERON or CL)
+
+  Returns:
+    CZ slim tissue ID, or None if no mapping found
+  """
+  from cellxgene_ontology_guide.curated_ontology_term_lists import (
+    CuratedOntologyTermList, get_curated_ontology_term_list
+  )
+  from cellxgene_ontology_guide.ontology_parser import OntologyParser
+  from src.data_loading.tissue_encoder import FALLBACK_TISSUE_MAPPINGS
+
+  # Get curated tissue list (CZ slim)
+  curated_tissues = get_curated_ontology_term_list(CuratedOntologyTermList.TISSUE_GENERAL)
+  curated_tissues_set = set(curated_tissues)
+
+  # Tier 1: Already in CZ slim
+  if tissue_id in curated_tissues_set:
+    return tissue_id
+
+  # Tier 2: Find nearest CZ slim ancestor
+  try:
+    ontology_parser = OntologyParser()
+    ancestors = ontology_parser.get_term_ancestors(tissue_id, include_self=False)
+    for ancestor in ancestors:
+      if ancestor in curated_tissues_set:
+        return ancestor
+  except:
+    pass
+
+  # Tier 3: Use manual fallback mapping
+  # Accept any tissue in FALLBACK_TISSUE_MAPPINGS, even if not in CZ slim
+  # (these are tissues we have constraints for)
+  if tissue_id in FALLBACK_TISSUE_MAPPINGS:
+    mapped_tissue = FALLBACK_TISSUE_MAPPINGS[tissue_id]['tissue']
+    # Return the mapped tissue (could be itself or different)
+    return mapped_tissue
+
+  # No mapping found
+  return None
+
+
 def create_code_remapping(
     cell_types: list,
     cell_type_codes: pd.Series,
@@ -186,6 +236,25 @@ Examples:
   parser.add_argument('--skip-per-file', action='store_true',
                      help='Skip per-file metrics computation for faster evaluation')
 
+  # Constrained output arguments
+  parser.add_argument('--enable-constraints', action='store_true',
+                     help='Enable tissue-based constrained output evaluation (default: False)')
+  parser.add_argument('--constraint-mode', type=str, default='both',
+                     choices=['allowlist', 'soft_prior', 'both'],
+                     help='Constraint mode(s) to evaluate (default: both)')
+  parser.add_argument('--constraints-dir', type=str, default='data/cellxgene_constraints',
+                     help='Directory containing constraint data files (default: data/cellxgene_constraints)')
+  parser.add_argument('--allowlist-path', type=str, default=None,
+                     help='Override path to tissue_allowlists.json (default: None, uses constraints-dir)')
+  parser.add_argument('--counts-path', type=str, default=None,
+                     help='Override path to tissue_celltype_counts.json (default: None, uses constraints-dir)')
+  parser.add_argument('--alpha', type=float, nargs='+', default=[0.5],
+                     help='Alpha value(s) for soft prior strength (default: 0.5)')
+  parser.add_argument('--alpha-sweep', action='store_true',
+                     help='Enable alpha sweep mode, evaluates [0.0, 0.1, 0.2, ..., 1.0] (default: False)')
+  parser.add_argument('--save-per-tissue-metrics', action='store_true',
+                     help='Save detailed per-tissue metrics to CSV (default: False)')
+
   return parser.parse_args()
 
 
@@ -273,15 +342,17 @@ def load_evaluation_data(
   code_remapping: Dict[int, int],
   cell_type_codes: pd.Series,
   verbose: bool = False,
-  track_files: bool = True
-) -> Tuple[np.ndarray, np.ndarray, Optional[list]]:
+  track_files: bool = True,
+  extract_tissue_ids: bool = False
+) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[list]]:
   """Load evaluation data using ComposableTrainingDataset.
 
   Returns:
     X_eval: Feature matrix
     y_eval: Labels
+    tissue_ids: Tissue ontology IDs for each sample (if extract_tissue_ids=True), else None
     file_info: List of dicts with file-level info (if track_files=True), else None
-               Each dict contains: {'filename', 'start_idx', 'end_idx', 'X', 'y'}
+               Each dict contains: {'filename', 'start_idx', 'end_idx', 'X', 'y', 'tissue_ids'}
   """
 
   if verbose:
@@ -315,8 +386,20 @@ def load_evaluation_data(
   # Load all data into memory, tracking file boundaries if requested
   X_list = []
   y_list = []
+  tissue_ids_list = [] if extract_tissue_ids else None
   file_info = [] if track_files else None
   current_idx = 0
+
+  # Metadata directory for tissue ID extraction
+  metadata_dir = None
+  if extract_tissue_ids:
+    metadata_suffix = config.get('metadata_suffix', '')
+    metadata_dir = Path(data_dir) / f"cellxgene_v2{metadata_suffix}"
+    if not metadata_dir.exists():
+      print(f"Warning: Metadata directory not found: {metadata_dir}")
+      print("  Tissue IDs will not be extracted")
+      extract_tissue_ids = False
+      tissue_ids_list = None
 
   # Load files one by one to track boundaries
   for file_path in dataset.file_list:
@@ -348,9 +431,57 @@ def load_evaluation_data(
       file_X = np.concatenate(file_X_list, axis=0).astype(np.float32)
       file_y = np.concatenate(file_y_list, axis=0).astype(np.int64)
 
+      # Extract tissue IDs from metadata if requested
+      file_tissue_ids = None
+      if extract_tissue_ids and metadata_dir:
+        filename = file_path.name if hasattr(file_path, 'name') else Path(file_path).name
+        # Look for corresponding metadata file (add .parquet if not present)
+        if not filename.endswith('.parquet'):
+          filename = filename + '.parquet'
+        metadata_file = metadata_dir / filename
+        if metadata_file.exists():
+          try:
+            metadata_df = pd.read_parquet(metadata_file, columns=['tissue_ontology_term_id'])
+            file_tissue_ids = metadata_df['tissue_ontology_term_id'].values
+
+            # Map tissue IDs to CZ slim tissues for constraint lookup
+            mapped_tissue_ids = []
+            for tid in file_tissue_ids:
+              if tid == 'unknown':
+                mapped_tissue_ids.append('unknown')
+              else:
+                mapped_tid = map_tissue_to_cz_slim(tid)
+                # If no mapping found, keep as 'unknown' for constraint purposes
+                mapped_tissue_ids.append(mapped_tid if mapped_tid is not None else 'unknown')
+            file_tissue_ids = np.array(mapped_tissue_ids)
+
+            # Apply code_remapping filtering to align with labels
+            # Tissue IDs should match the samples after filtering
+            if len(file_tissue_ids) != len(file_y):
+              # Tissue IDs need to be filtered to match processed labels
+              # For now, slice to match (assumes same filtering applied)
+              if len(file_tissue_ids) >= len(file_y):
+                file_tissue_ids = file_tissue_ids[:len(file_y)]
+              else:
+                print(f"Warning: Tissue ID count mismatch for {filename}: {len(file_tissue_ids)} vs {len(file_y)}")
+                file_tissue_ids = None
+          except Exception as e:
+            if verbose:
+              print(f"Warning: Could not load tissue IDs from {metadata_file}: {e}")
+            file_tissue_ids = None
+        else:
+          if verbose:
+            print(f"Warning: Metadata file not found: {metadata_file}")
+
       # Add to overall lists
       X_list.append(file_X)
       y_list.append(file_y)
+      if extract_tissue_ids:
+        if file_tissue_ids is not None:
+          tissue_ids_list.append(file_tissue_ids)
+        else:
+          # Fill with None or placeholder if tissue IDs not available for this file
+          tissue_ids_list.append(np.array(['unknown'] * len(file_y)))
 
       # Track file info if requested
       if track_files:
@@ -361,7 +492,8 @@ def load_evaluation_data(
           'start_idx': current_idx,
           'end_idx': end_idx,
           'X': file_X,
-          'y': file_y
+          'y': file_y,
+          'tissue_ids': file_tissue_ids
         })
         current_idx = end_idx
 
@@ -371,15 +503,21 @@ def load_evaluation_data(
   # Combine all batches
   X_eval = np.concatenate(X_list, axis=0).astype(np.float32)
   y_eval = np.concatenate(y_list, axis=0).astype(np.int64)
+  tissue_ids_eval = None
+  if extract_tissue_ids and tissue_ids_list:
+    tissue_ids_eval = np.concatenate(tissue_ids_list, axis=0)
 
   if verbose:
     print(f"  Loaded {len(X_eval):,} samples")
     print(f"  Input dimensions: {X_eval.shape[1]}")
     print(f"  Unique classes: {len(np.unique(y_eval))}")
+    if extract_tissue_ids and tissue_ids_eval is not None:
+      unique_tissues = np.unique(tissue_ids_eval)
+      print(f"  Unique tissues: {len(unique_tissues)}")
     if track_files and file_info:
       print(f"  Tracked {len(file_info)} files for per-file metrics")
 
-  return X_eval, y_eval, file_info
+  return X_eval, y_eval, tissue_ids_eval, file_info
 
 
 def format_metrics_output(
@@ -601,6 +739,336 @@ def format_per_file_metrics(per_file_df: pd.DataFrame) -> str:
   return "\n".join(output)
 
 
+class FilteredTissueConstraints:
+  """Tissue-based constraints with dynamic vocabulary filtering.
+
+  Loads constraint data from JSON files and filters to match the model's
+  vocabulary, enabling the same constraint files to work with any cell_count_threshold.
+  """
+
+  def __init__(
+    self,
+    allowlist_path: str,
+    counts_path: str,
+    code_remapping: dict,
+    cell_type_to_idx: dict,
+    num_classes: int,
+    device: torch.device
+  ):
+    """Initialize constraints with dynamic filtering.
+
+    Args:
+      allowlist_path: Path to tissue_allowlists.json
+      counts_path: Path to tissue_celltype_counts.json
+      code_remapping: Maps full vocab indices (832) to filtered indices or -100
+      cell_type_to_idx: Maps cell type names to filtered indices
+      num_classes: Number of classes in filtered vocabulary
+      device: Torch device
+    """
+    import json
+
+    self.num_classes = num_classes
+    self.device = device
+    self.tissue_to_allowlist = {}
+    self.tissue_to_logp = {}
+
+    # Load and filter allowlists
+    if allowlist_path and Path(allowlist_path).exists():
+      with open(allowlist_path) as f:
+        tissue_allowlists_full = json.load(f)
+
+      for tissue_id, full_indices in tissue_allowlists_full.items():
+        # Filter to model's vocabulary
+        filtered_indices = [
+          code_remapping[idx] for idx in full_indices
+          if idx in code_remapping and code_remapping[idx] != -100
+        ]
+        if filtered_indices:
+          self.tissue_to_allowlist[tissue_id] = filtered_indices
+
+    # Load counts and compute soft priors
+    if counts_path and Path(counts_path).exists():
+      with open(counts_path) as f:
+        counts_data = json.load(f)
+        tissue_counts = counts_data.get('counts', {})
+
+      for tissue_id, cell_type_counts in tissue_counts.items():
+        # Map cell type names to filtered indices
+        filtered_counts = {}
+        for cell_type_name, count in cell_type_counts.items():
+          if cell_type_name in cell_type_to_idx:
+            filtered_idx = cell_type_to_idx[cell_type_name]
+            filtered_counts[filtered_idx] = count
+
+        if filtered_counts:
+          # Compute log probabilities
+          logp = self._counts_to_logp(filtered_counts)
+          self.tissue_to_logp[tissue_id] = logp.to(device)
+
+  def _counts_to_logp(self, counts_dict: dict) -> torch.Tensor:
+    """Convert counts dict to log probabilities tensor.
+
+    Args:
+      counts_dict: {class_idx: count}
+
+    Returns:
+      logp: [num_classes] log probability tensor
+    """
+    counts = torch.zeros(self.num_classes, dtype=torch.float32)
+    for idx, count in counts_dict.items():
+      counts[idx] = count
+
+    # Normalize to probabilities and take log
+    probs = counts / counts.sum()
+    logp = torch.log(probs + 1e-10)  # Add small epsilon to avoid log(0)
+    return logp
+
+  def apply_allowlist(self, logits: torch.Tensor, tissue_id: str) -> torch.Tensor:
+    """Apply allowlist constraints to logits.
+
+    Args:
+      logits: [batch_size, num_classes] logits
+      tissue_id: Tissue ontology ID
+
+    Returns:
+      constrained_logits: [batch_size, num_classes] with disallowed classes set to -1e9
+    """
+    if tissue_id not in self.tissue_to_allowlist:
+      return logits
+
+    constrained_logits = logits.clone()
+    allowlist = self.tissue_to_allowlist[tissue_id]
+
+    # Create mask: all False, then set allowed indices to True
+    mask = torch.zeros(self.num_classes, dtype=torch.bool, device=logits.device)
+    mask[allowlist] = True
+
+    # Set disallowed logits to -1e9
+    constrained_logits[:, ~mask] = -1e9
+
+    return constrained_logits
+
+  def apply_soft_prior(
+    self,
+    logits: torch.Tensor,
+    tissue_id: str,
+    alpha: float
+  ) -> torch.Tensor:
+    """Apply soft prior constraints to logits.
+
+    Args:
+      logits: [batch_size, num_classes] logits
+      tissue_id: Tissue ontology ID
+      alpha: Prior strength (0 = no prior, 1 = equal weight to logits)
+
+    Returns:
+      biased_logits: [batch_size, num_classes] with soft prior added
+    """
+    if tissue_id not in self.tissue_to_logp:
+      return logits
+
+    logp = self.tissue_to_logp[tissue_id]
+    # Broadcast and add: [batch_size, num_classes] + [num_classes]
+    biased_logits = logits + alpha * logp
+
+    return biased_logits
+
+
+def evaluate_with_constraints(
+  model: torch.nn.Module,
+  X: np.ndarray,
+  y: np.ndarray,
+  tissue_ids: np.ndarray,
+  file_info: list,
+  constraints: Any,
+  constraint_mode: str,
+  alpha_values: list,
+  cell_types: list,
+  cell_type_to_idx: dict,
+  ontology_graph: Any,
+  batch_size: int,
+  device: torch.device,
+  verbose: bool = False
+) -> dict:
+  """Evaluate model with tissue-based constraints.
+
+  Args:
+    model: Trained model
+    X: Feature matrix [N, D]
+    y: True labels [N]
+    tissue_ids: Tissue ontology IDs [N]
+    file_info: List of file metadata dicts with tissue_ids
+    constraints: CellxGeneTissueConstraints object
+    constraint_mode: 'allowlist', 'soft_prior', or 'both'
+    alpha_values: List of alpha values for soft prior
+    cell_types: List of cell type names
+    cell_type_to_idx: Dict mapping cell type to index
+    ontology_graph: Cell Ontology graph (optional)
+    batch_size: Inference batch size
+    device: Torch device
+    verbose: Enable verbose output
+
+  Returns:
+    results: Dict with keys 'allowlist', 'soft_prior', 'alpha_sweep', 'statistics'
+  """
+  from sklearn.metrics import accuracy_score
+  from src.training.metrics import evaluate_with_hierarchy, evaluate_and_return_predictions
+
+  results = {}
+  model.eval()
+
+  # Process file by file (assuming files are tissue-homogeneous)
+  file_results_by_mode = {
+    'allowlist': [],
+    'soft_prior': {alpha: [] for alpha in alpha_values}
+  }
+
+  for file_dict in file_info:
+    file_X = file_dict['X']
+    file_y = file_dict['y']
+    file_tissue_ids = file_dict.get('tissue_ids')
+
+    if file_tissue_ids is None or len(file_tissue_ids) == 0:
+      if verbose:
+        print(f"Warning: No tissue IDs for file {file_dict['filename']}, skipping constraints")
+      continue
+
+    # Determine dominant tissue for this file
+    unique_tissues, counts = np.unique(file_tissue_ids, return_counts=True)
+    dominant_tissue = unique_tissues[np.argmax(counts)]
+
+    if dominant_tissue == 'unknown':
+      continue
+
+    # Check if tissue has constraints
+    has_allowlist = dominant_tissue in constraints.tissue_to_allowlist
+    has_prior = dominant_tissue in constraints.tissue_to_logp
+
+    # Process file in batches
+    file_X_tensor = torch.tensor(file_X, dtype=torch.float32)
+    num_samples = len(file_X)
+
+    # Allowlist mode
+    if constraint_mode in ['allowlist', 'both'] and has_allowlist:
+      file_preds_allowlist = []
+      for i in range(0, num_samples, batch_size):
+        batch_X = file_X_tensor[i:i+batch_size].to(device)
+        with torch.no_grad():
+          logits = model(batch_X)
+          # Apply allowlist
+          constrained_logits = constraints.apply_allowlist(logits, dominant_tissue)
+          preds = constrained_logits.argmax(dim=-1).cpu().numpy()
+          file_preds_allowlist.append(preds)
+
+      file_preds_allowlist = np.concatenate(file_preds_allowlist)
+      file_results_by_mode['allowlist'].append({
+        'filename': file_dict['filename'],
+        'tissue': dominant_tissue,
+        'y_true': file_y,
+        'y_pred': file_preds_allowlist
+      })
+
+    # Soft prior mode
+    if constraint_mode in ['soft_prior', 'both'] and has_prior:
+      for alpha in alpha_values:
+        file_preds_soft = []
+        for i in range(0, num_samples, batch_size):
+          batch_X = file_X_tensor[i:i+batch_size].to(device)
+          with torch.no_grad():
+            logits = model(batch_X)
+            # Apply soft prior
+            constrained_logits = constraints.apply_soft_prior(logits, dominant_tissue, alpha)
+            preds = constrained_logits.argmax(dim=-1).cpu().numpy()
+            file_preds_soft.append(preds)
+
+        file_preds_soft = np.concatenate(file_preds_soft)
+        file_results_by_mode['soft_prior'][alpha].append({
+          'filename': file_dict['filename'],
+          'tissue': dominant_tissue,
+          'y_true': file_y,
+          'y_pred': file_preds_soft
+        })
+
+  # Aggregate results across files
+  from sklearn.metrics import f1_score, precision_score, recall_score, log_loss
+  from scipy.special import softmax
+
+  # Helper function to compute metrics from predictions
+  def compute_metrics_from_predictions(y_true, y_pred, num_classes, cell_types_list=None, ontology=None):
+    """Compute metrics from predictions.
+
+    Args:
+      y_true: True labels
+      y_pred: Predicted labels
+      num_classes: Number of classes
+      cell_types_list: List of cell type names (optional, for hierarchical metrics)
+      ontology: Cell ontology graph (optional, for hierarchical metrics)
+
+    Returns:
+      Dictionary of metrics
+    """
+    metrics = {}
+    metrics['accuracy'] = accuracy_score(y_true, y_pred)
+    metrics['macro_f1'] = f1_score(y_true, y_pred, average='macro', zero_division=0)
+    metrics['macro_precision'] = precision_score(y_true, y_pred, average='macro', zero_division=0)
+    metrics['macro_recall'] = recall_score(y_true, y_pred, average='macro', zero_division=0)
+
+    # Compute hierarchical metrics if ontology available
+    if ontology is not None and cell_types_list is not None:
+      from src.training.hierarchical_metrics import calculate_hierarchical_f_score
+      # Convert indices to labels
+      y_true_labels = [cell_types_list[idx] for idx in y_true]
+      y_pred_labels = [cell_types_list[idx] for idx in y_pred]
+      # Calculate hierarchical metrics
+      hier_metrics = calculate_hierarchical_f_score(y_true_labels, y_pred_labels, ontology)
+      metrics.update(hier_metrics)
+
+    return metrics
+
+  # Allowlist results
+  if file_results_by_mode['allowlist']:
+    y_true_all = np.concatenate([r['y_true'] for r in file_results_by_mode['allowlist']])
+    y_pred_all = np.concatenate([r['y_pred'] for r in file_results_by_mode['allowlist']])
+
+    metrics_allowlist = compute_metrics_from_predictions(
+      y_true_all, y_pred_all, len(cell_types),
+      cell_types_list=cell_types,
+      ontology=ontology_graph
+    )
+
+    results['allowlist'] = {
+      'metrics': metrics_allowlist,
+      'y_true': y_true_all,
+      'y_pred': y_pred_all,
+      'num_samples': len(y_true_all)
+    }
+
+  # Soft prior results
+  soft_prior_results = {}
+  for alpha in alpha_values:
+    if file_results_by_mode['soft_prior'][alpha]:
+      y_true_all = np.concatenate([r['y_true'] for r in file_results_by_mode['soft_prior'][alpha]])
+      y_pred_all = np.concatenate([r['y_pred'] for r in file_results_by_mode['soft_prior'][alpha]])
+
+      metrics_soft = compute_metrics_from_predictions(
+        y_true_all, y_pred_all, len(cell_types),
+        cell_types_list=cell_types,
+        ontology=ontology_graph
+      )
+
+      soft_prior_results[alpha] = {
+        'metrics': metrics_soft,
+        'y_true': y_true_all,
+        'y_pred': y_pred_all,
+        'num_samples': len(y_true_all)
+      }
+
+  if soft_prior_results:
+    results['soft_prior'] = soft_prior_results
+
+  return results
+
+
 def save_results(
   output_dir: Path,
   metrics: Dict[str, float],
@@ -746,13 +1214,14 @@ def main():
 
   # Load evaluation data
   compute_per_file = not args.skip_per_file
-  X_eval, y_eval, file_info = load_evaluation_data(
+  X_eval, y_eval, tissue_ids_eval, file_info = load_evaluation_data(
     str(data_dir),
     config,
     code_remapping,
     filtered_codes,
     verbose=args.verbose,
-    track_files=compute_per_file
+    track_files=compute_per_file,
+    extract_tissue_ids=args.enable_constraints
   )
 
   # Validate dimensions
@@ -823,6 +1292,71 @@ def main():
       print(f"\nWarning: Ontology directory not found: {ontology_dir}")
       print("Skipping hierarchical metrics...")
 
+  # Load constraints if enabled
+  constraints = None
+  alpha_values = args.alpha
+  if args.enable_constraints:
+    if args.verbose:
+      print(f"\nLoading tissue-based constraints...")
+
+    # Handle alpha sweep
+    if args.alpha_sweep:
+      alpha_values = [round(x * 0.1, 1) for x in range(11)]  # [0.0, 0.1, 0.2, ..., 1.0]
+      if args.verbose:
+        print(f"  Alpha sweep mode enabled: {alpha_values}")
+    elif args.verbose:
+      print(f"  Alpha value(s): {alpha_values}")
+
+    try:
+      # Build constraint paths
+      constraints_dir = Path(args.constraints_dir)
+      allowlist_path = args.allowlist_path or (constraints_dir / "tissue_allowlists.json")
+      counts_path = args.counts_path or (constraints_dir / "tissue_celltype_counts.json")
+
+      # Check if files exist
+      allowlist_exists = allowlist_path.exists() if allowlist_path else False
+      counts_exists = counts_path.exists() if counts_path else False
+
+      if not allowlist_exists and not counts_exists:
+        print(f"Warning: No constraint files found in {constraints_dir}")
+        print("  Expected: tissue_allowlists.json and/or tissue_celltype_counts.json")
+        constraints = None
+      else:
+        if not allowlist_exists:
+          print(f"Warning: Allowlist file not found: {allowlist_path}")
+          allowlist_path = None
+        if not counts_exists:
+          print(f"Warning: Counts file not found: {counts_path}")
+          counts_path = None
+
+        # Create FilteredTissueConstraints with dynamic vocabulary filtering
+        constraints = FilteredTissueConstraints(
+          allowlist_path=str(allowlist_path) if allowlist_path else None,
+          counts_path=str(counts_path) if counts_path else None,
+          code_remapping=code_remapping,
+          cell_type_to_idx=cell_type_to_idx,
+          num_classes=num_classes,
+          device=device
+        )
+
+        if args.verbose:
+          if allowlist_path:
+            print(f"  Loaded allowlists: {len(constraints.tissue_to_allowlist)} tissues")
+          if counts_path:
+            print(f"  Loaded soft priors: {len(constraints.tissue_to_logp)} tissues")
+          if tissue_ids_eval is not None:
+            unique_tissues = np.unique(tissue_ids_eval)
+            unique_tissues = [t for t in unique_tissues if t != 'unknown']
+            print(f"  Tissues in evaluation data: {len(unique_tissues)}")
+
+    except Exception as e:
+      print(f"Warning: Could not load constraints: {e}")
+      print("Continuing with baseline evaluation only...")
+      import traceback
+      if args.verbose:
+        traceback.print_exc()
+      constraints = None
+
   # Run evaluation
   if args.verbose:
     print(f"\nRunning evaluation on {len(X_eval):,} samples...")
@@ -862,6 +1396,103 @@ def main():
   )
 
   print(summary_text)
+
+  # Run constrained evaluation if enabled
+  constrained_results = None
+  if constraints and file_info:
+    if args.verbose:
+      print(f"\nRunning constrained evaluation...")
+
+    try:
+      constrained_results = evaluate_with_constraints(
+        model=model,
+        X=X_eval,
+        y=y_eval,
+        tissue_ids=tissue_ids_eval,
+        file_info=file_info,
+        constraints=constraints,
+        constraint_mode=args.constraint_mode,
+        alpha_values=alpha_values,
+        cell_types=filtered_cell_types,
+        cell_type_to_idx=cell_type_to_idx,
+        ontology_graph=ontology_graph if enable_hierarchical else None,
+        batch_size=args.batch_size,
+        device=device,
+        verbose=args.verbose
+      )
+
+      # Print constrained results summary with baseline comparison
+      if constrained_results:
+        print("\n" + "="*80)
+        print("Constrained Evaluation Results (Baseline vs Constrained)")
+        print("="*80)
+
+        # Get baseline metrics for comparison
+        # Note: baseline may not have 'accuracy' from evaluate_with_hierarchy, compute it
+        from sklearn.metrics import accuracy_score
+        baseline_accuracy = accuracy_score(y_true, y_pred)
+        baseline_macro_f1 = metrics.get('macro_f1', 0.0)
+
+        # Create comparison table
+        print("\nPerformance Comparison:")
+        print("-" * 80)
+        print(f"{'Mode':<25} {'Samples':>12} {'Accuracy':>12} {'Macro F1':>12} {'Δ Acc':>10} {'Δ F1':>10}")
+        print("-" * 80)
+
+        # Baseline row
+        print(f"{'Baseline (unconstrained)':<25} {len(y_eval):>12,} {baseline_accuracy:>12.4f} {baseline_macro_f1:>12.4f} {'-':>10} {'-':>10}")
+
+        # Allowlist results
+        if 'allowlist' in constrained_results:
+          allowlist_metrics = constrained_results['allowlist']['metrics']
+          allowlist_acc = allowlist_metrics.get('accuracy', 0.0)
+          allowlist_f1 = allowlist_metrics.get('macro_f1', 0.0)
+          delta_acc = allowlist_acc - baseline_accuracy
+          delta_f1 = allowlist_f1 - baseline_macro_f1
+          num_samples = constrained_results['allowlist']['num_samples']
+          print(f"{'Allowlist (hard)':<25} {num_samples:>12,} {allowlist_acc:>12.4f} {allowlist_f1:>12.4f} {delta_acc:>+10.4f} {delta_f1:>+10.4f}")
+
+        # Soft prior results
+        if 'soft_prior' in constrained_results:
+          for alpha, result in sorted(constrained_results['soft_prior'].items()):
+            soft_metrics = result['metrics']
+            soft_acc = soft_metrics.get('accuracy', 0.0)
+            soft_f1 = soft_metrics.get('macro_f1', 0.0)
+            delta_acc = soft_acc - baseline_accuracy
+            delta_f1 = soft_f1 - baseline_macro_f1
+            num_samples = result['num_samples']
+            print(f"{'Soft prior (α=' + str(alpha) + ')':<25} {num_samples:>12,} {soft_acc:>12.4f} {soft_f1:>12.4f} {delta_acc:>+10.4f} {delta_f1:>+10.4f}")
+
+        print("-" * 80)
+
+        # Additional metrics if hierarchical
+        if enable_hierarchical and 'hierarchical_f1' in metrics:
+          print("\nHierarchical Metrics:")
+          print("-" * 60)
+          print(f"{'Mode':<25} {'Hier. F1':>12} {'Hier. Prec':>12} {'Hier. Rec':>12}")
+          print("-" * 60)
+
+          baseline_hier_f1 = metrics.get('hierarchical_f1', 0.0)
+          baseline_hier_prec = metrics.get('hierarchical_precision', 0.0)
+          baseline_hier_rec = metrics.get('hierarchical_recall', 0.0)
+          print(f"{'Baseline':<25} {baseline_hier_f1:>12.4f} {baseline_hier_prec:>12.4f} {baseline_hier_rec:>12.4f}")
+
+          if 'allowlist' in constrained_results:
+            allowlist_metrics = constrained_results['allowlist']['metrics']
+            print(f"{'Allowlist':<25} {allowlist_metrics.get('hierarchical_f1', 0.0):>12.4f} {allowlist_metrics.get('hierarchical_precision', 0.0):>12.4f} {allowlist_metrics.get('hierarchical_recall', 0.0):>12.4f}")
+
+          if 'soft_prior' in constrained_results:
+            for alpha, result in sorted(constrained_results['soft_prior'].items()):
+              soft_metrics = result['metrics']
+              print(f"{'Soft prior (α=' + str(alpha) + ')':<25} {soft_metrics.get('hierarchical_f1', 0.0):>12.4f} {soft_metrics.get('hierarchical_precision', 0.0):>12.4f} {soft_metrics.get('hierarchical_recall', 0.0):>12.4f}")
+
+          print("-" * 60)
+
+    except Exception as e:
+      print(f"Warning: Constrained evaluation failed: {e}")
+      import traceback
+      traceback.print_exc()
+      constrained_results = None
 
   # Compute and display per-file metrics if requested
   per_file_df = None
