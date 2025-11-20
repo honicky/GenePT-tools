@@ -42,6 +42,8 @@ python scripts/evaluate_mlp.py \
 - `--save-predictions`: Save prediction outputs (default: False)
 - `--ontology-dir`: Cell Ontology cache directory (default: `data/ontology`)
 - `--verbose`: Enable verbose output (default: False)
+- `--per-file-metrics`: Compute and report per-file metrics (default: True)
+- `--skip-per-file`: Skip per-file metrics computation for faster evaluation
 
 ### 2. Core Functionality
 
@@ -95,6 +97,8 @@ python scripts/evaluate_mlp.py \
 - Collect predictions (logits and probabilities) and true labels
 
 #### 2.6 Metrics Computation
+
+**Overall Metrics:**
 - Compute all standard classification metrics:
   - `logloss`: Cross-entropy loss
   - `accuracy`: Overall accuracy
@@ -108,6 +112,16 @@ python scripts/evaluate_mlp.py \
   - `hierarchical_f1`, `hierarchical_precision`, `hierarchical_recall`
   - Load ontology from `--ontology-dir` (default: `data/ontology`)
   - Handle missing ontology gracefully (skip hierarchical metrics, warn user)
+
+**Per-File Metrics (if enabled):**
+- Compute metrics separately for each parquet file in the test set
+- Track file-level performance to identify:
+  - Dataset quality issues (files performing significantly worse)
+  - Distribution shift across data batches
+  - Inconsistencies in test set composition
+- Report per-file: sample count, logloss, accuracy, macro_f1, recall@2, recall@5, recall@10, hierarchical_f1 (if ontology available)
+- Compute summary statistics: mean, std, min, max across all files
+- Can be disabled with `--skip-per-file` for faster evaluation on large datasets
 
 #### 2.7 Output
 - Print comprehensive summary to console:
@@ -157,13 +171,34 @@ python scripts/evaluate_mlp.py \
   hierarchical_f1:          0.8901
   hierarchical_precision:   0.8945
   hierarchical_recall:      0.8858
+
+  Per-File Metrics:
+  -----------------
+  File                                    Samples  Logloss  Accuracy  Macro F1  Hier. F1  Recall@2  Recall@5  Recall@10
+  -----------------------------------------------------------------------------------------------------------------------
+  batch_001.parquet                         8,432    1.201     0.735     0.862     0.891     0.925     0.968     0.982
+  batch_002.parquet                         7,891    1.245     0.720     0.851     0.885     0.918     0.961     0.979
+  batch_003.parquet                         8,127    1.189     0.741     0.869     0.897     0.931     0.972     0.985
+  ...
+
+  Summary Statistics Across Files:
+  ---------------------------------
+  Logloss:         mean=1.234 std=0.045 min=1.189 max=1.301
+  Accuracy:        mean=0.728 std=0.018 min=0.695 max=0.752
+  Macro F1:        mean=0.857 std=0.021 min=0.821 max=0.882
+  Hierarchical F1: mean=0.890 std=0.008 min=0.878 max=0.904
+  Recall@2:        mean=0.923 std=0.012 min=0.901 max=0.941
+  Recall@10:       mean=0.981 std=0.008 min=0.968 max=0.991
   ```
 
 - Save outputs to `--output-dir`:
-  - `evaluation_results.json`: All metrics in structured JSON format
+  - `evaluation_results.json`: All metrics in structured JSON format, including:
+    - Overall metrics (logloss, F1, recall@k, etc.)
+    - `per_file_metrics`: List of per-file metric dicts (if per-file enabled)
+    - `per_file_summary_stats`: Summary statistics across files (mean, std, min, max)
+  - `evaluation_summary.txt`: Complete console output including per-file metrics table
   - `predictions.npz`: Predictions (probs, logits) and labels (if `--save-predictions`)
-  - `evaluation_summary.txt`: Console output captured to file
-  - `class_distribution.csv`: Per-class sample counts and metrics
+  - `class_distribution.csv`: Per-class sample counts
 
 ## Technical Design
 
@@ -413,6 +448,30 @@ python scripts/evaluate_mlp.py \
 
 ### No New Dependencies Required
 
+## Use Cases for Per-File Metrics
+
+Per-file metrics help identify several important issues:
+
+1. **Dataset Quality Issues**: Files with significantly lower performance may indicate:
+   - Data corruption or processing errors
+   - Different preprocessing applied to some batches
+   - Label noise concentrated in specific files
+
+2. **Distribution Shift**: Performance variation across files may reveal:
+   - Temporal drift (if files represent different collection times)
+   - Batch effects (if files come from different experimental batches)
+   - Dataset composition changes
+
+3. **Test Set Validation**: Consistent per-file metrics indicate:
+   - Proper shuffling and data splitting
+   - Representative sampling across batches
+   - No systematic biases in file creation
+
+4. **Debugging**: When overall metrics are unexpected:
+   - Identify which specific files are problematic
+   - Focus investigation on outlier files
+   - Validate file loading and preprocessing
+
 ## Future Enhancements
 
 1. **Per-Class Metrics**: Export detailed per-cell-type performance (precision, recall, F1, sample count)
@@ -422,6 +481,7 @@ python scripts/evaluate_mlp.py \
 5. **WandB Logging**: Add `--log-to-wandb` to create evaluation run in WandB
 6. **Embedding-Only Evaluation**: Support evaluating on subsets of embeddings (e.g., GenePT only)
 7. **CSV Export**: Export predictions in human-readable CSV format with cell type names
+8. **Per-File Hierarchical Metrics**: Extend per-file reporting to include hierarchical metrics
 
 ## Success Criteria
 

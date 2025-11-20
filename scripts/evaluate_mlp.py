@@ -183,6 +183,8 @@ Examples:
                      help='Cell Ontology cache directory (default: data/ontology)')
   parser.add_argument('--verbose', action='store_true',
                      help='Enable verbose output (default: False)')
+  parser.add_argument('--skip-per-file', action='store_true',
+                     help='Skip per-file metrics computation for faster evaluation')
 
   return parser.parse_args()
 
@@ -270,9 +272,17 @@ def load_evaluation_data(
   config: Dict[str, Any],
   code_remapping: Dict[int, int],
   cell_type_codes: pd.Series,
-  verbose: bool = False
-) -> Tuple[np.ndarray, np.ndarray]:
-  """Load evaluation data using ComposableTrainingDataset."""
+  verbose: bool = False,
+  track_files: bool = True
+) -> Tuple[np.ndarray, np.ndarray, Optional[list]]:
+  """Load evaluation data using ComposableTrainingDataset.
+
+  Returns:
+    X_eval: Feature matrix
+    y_eval: Labels
+    file_info: List of dicts with file-level info (if track_files=True), else None
+               Each dict contains: {'filename', 'start_idx', 'end_idx', 'X', 'y'}
+  """
 
   if verbose:
     print(f"\nLoading evaluation data from {data_dir}...")
@@ -302,13 +312,58 @@ def load_evaluation_data(
   if verbose:
     print(f"  Found {len(dataset.file_list)} files to load")
 
-  # Load all data into memory
+  # Load all data into memory, tracking file boundaries if requested
   X_list = []
   y_list = []
+  file_info = [] if track_files else None
+  current_idx = 0
 
-  for X_batch, y_batch in dataset:
-    X_list.append(X_batch.numpy())
-    y_list.append(y_batch.numpy())
+  # Load files one by one to track boundaries
+  for file_path in dataset.file_list:
+    # Create a dataset for just this file
+    file_dataset = ComposableTrainingDataset(
+      base_dir=Path(data_dir),
+      embedding_types=config['embedding_types'],
+      batch_size=100000,  # Large batch to get all file data at once
+      genept_dims=config['genept_dims'],
+      code_remapping=code_remapping,
+      track_invalid_embeddings=config.get('track_invalid_embeddings', True) if not track_files else False,
+      seed=config.get('seed', 42),
+      is_test_mode=True,
+      test_genept_suffix=config.get('genept_suffix', ''),
+      test_tissue_suffix=config.get('tissue_suffix', ''),
+      test_metadata_suffix=config.get('metadata_suffix', ''),
+      cell_type_codes=cell_type_codes,
+      verbose=False
+    )
+    file_dataset.file_list = [file_path]
+
+    file_X_list = []
+    file_y_list = []
+    for X_batch, y_batch in file_dataset:
+      file_X_list.append(X_batch.numpy())
+      file_y_list.append(y_batch.numpy())
+
+    if file_X_list:
+      file_X = np.concatenate(file_X_list, axis=0).astype(np.float32)
+      file_y = np.concatenate(file_y_list, axis=0).astype(np.int64)
+
+      # Add to overall lists
+      X_list.append(file_X)
+      y_list.append(file_y)
+
+      # Track file info if requested
+      if track_files:
+        end_idx = current_idx + len(file_X)
+        filename = file_path.name if hasattr(file_path, 'name') else Path(file_path).name
+        file_info.append({
+          'filename': filename,
+          'start_idx': current_idx,
+          'end_idx': end_idx,
+          'X': file_X,
+          'y': file_y
+        })
+        current_idx = end_idx
 
   if not X_list:
     raise ValueError("No evaluation data loaded. Check data directory and suffixes.")
@@ -321,8 +376,10 @@ def load_evaluation_data(
     print(f"  Loaded {len(X_eval):,} samples")
     print(f"  Input dimensions: {X_eval.shape[1]}")
     print(f"  Unique classes: {len(np.unique(y_eval))}")
+    if track_files and file_info:
+      print(f"  Tracked {len(file_info)} files for per-file metrics")
 
-  return X_eval, y_eval
+  return X_eval, y_eval, file_info
 
 
 def format_metrics_output(
@@ -402,6 +459,148 @@ def format_metrics_output(
   return "\n".join(output)
 
 
+def compute_per_file_metrics(
+  model: torch.nn.Module,
+  file_info: list,
+  cell_types: list,
+  cell_type_to_idx: Dict[str, int],
+  ontology_graph: Optional[Any],  # nx.DiGraph when available
+  batch_size: int,
+  device: torch.device
+) -> pd.DataFrame:
+  """Compute metrics for each file separately.
+
+  Args:
+    model: Trained model
+    file_info: List of dicts with file data
+    cell_types: List of cell type names
+    cell_type_to_idx: Mapping from cell types to indices
+    ontology_graph: Cell ontology graph (optional)
+    batch_size: Batch size for inference
+    device: Device for inference
+
+  Returns:
+    DataFrame with per-file metrics
+  """
+  from src.training.metrics import evaluate_and_return_predictions, evaluate_with_hierarchy
+
+  per_file_results = []
+
+  for file_data in file_info:
+    filename = file_data['filename']
+    X_file = file_data['X']
+    y_file = file_data['y']
+
+    # Skip empty files
+    if len(X_file) == 0:
+      continue
+
+    # Compute metrics for this file
+    if ontology_graph is not None:
+      file_metrics, y_true_file, _, y_pred_file = evaluate_with_hierarchy(
+        model=model,
+        X=X_file,
+        y=y_file,
+        cell_types=cell_types,
+        cell_type_to_idx=cell_type_to_idx,
+        ontology_graph=ontology_graph,
+        batch_size=batch_size,
+        device=device
+      )
+    else:
+      file_metrics, y_true_file, _, y_pred_file = evaluate_and_return_predictions(
+        model=model,
+        X=X_file,
+        y=y_file,
+        num_classes=len(cell_types),
+        batch_size=batch_size,
+        device=device
+      )
+
+    # Compute accuracy manually since it's not in the metrics
+    from sklearn.metrics import accuracy_score
+    accuracy = accuracy_score(y_true_file, y_pred_file)
+
+    # Extract key metrics
+    result = {
+      'filename': filename,
+      'samples': len(X_file),
+      'logloss': file_metrics.get('logloss', np.nan),
+      'accuracy': accuracy,
+      'macro_f1': file_metrics.get('macro_f1', np.nan),
+      'recall_at_2': file_metrics.get('recall_at_2', np.nan),
+      'recall_at_5': file_metrics.get('recall_at_5', np.nan),
+      'recall_at_10': file_metrics.get('recall_at_10', np.nan),
+    }
+
+    # Add hierarchical metrics if available
+    if 'hierarchical_f1' in file_metrics:
+      result['hierarchical_f1'] = file_metrics['hierarchical_f1']
+
+    per_file_results.append(result)
+
+  return pd.DataFrame(per_file_results)
+
+
+def format_per_file_metrics(per_file_df: pd.DataFrame) -> str:
+  """Format per-file metrics for console output.
+
+  Args:
+    per_file_df: DataFrame with per-file metrics
+
+  Returns:
+    Formatted string for console output
+  """
+  if per_file_df.empty:
+    return ""
+
+  output = []
+  output.append("\nPer-File Metrics:")
+  output.append("-" * 120)
+
+  # Determine columns to display
+  has_hierarchical = 'hierarchical_f1' in per_file_df.columns
+
+  # Create header
+  if has_hierarchical:
+    header = f"{'File':<45} {'Samples':>8}  {'Logloss':>8}  {'Accuracy':>8}  {'Macro F1':>8}  {'Hier. F1':>8}  {'Recall@2':>8}  {'Recall@5':>8}  {'Recall@10':>9}"
+  else:
+    header = f"{'File':<45} {'Samples':>8}  {'Logloss':>8}  {'Accuracy':>8}  {'Macro F1':>8}  {'Recall@2':>8}  {'Recall@5':>8}  {'Recall@10':>9}"
+
+  output.append(header)
+  output.append("-" * 120)
+
+  # Add rows
+  for _, row in per_file_df.iterrows():
+    filename = row['filename'][:44]  # Truncate long names
+    if has_hierarchical:
+      line = f"{filename:<45} {row['samples']:>8,}  {row['logloss']:>8.3f}  {row['accuracy']:>8.3f}  {row['macro_f1']:>8.3f}  {row['hierarchical_f1']:>8.3f}  {row['recall_at_2']:>8.3f}  {row['recall_at_5']:>8.3f}  {row['recall_at_10']:>9.3f}"
+    else:
+      line = f"{filename:<45} {row['samples']:>8,}  {row['logloss']:>8.3f}  {row['accuracy']:>8.3f}  {row['macro_f1']:>8.3f}  {row['recall_at_2']:>8.3f}  {row['recall_at_5']:>8.3f}  {row['recall_at_10']:>9.3f}"
+    output.append(line)
+
+  # Add summary statistics
+  output.append("")
+  output.append("Summary Statistics Across Files:")
+  output.append("-" * 120)
+
+  metrics_to_summarize = ['logloss', 'accuracy', 'macro_f1', 'recall_at_2', 'recall_at_10']
+  if has_hierarchical:
+    metrics_to_summarize.insert(3, 'hierarchical_f1')
+
+  for metric in metrics_to_summarize:
+    if metric in per_file_df.columns:
+      mean_val = per_file_df[metric].mean()
+      std_val = per_file_df[metric].std()
+      min_val = per_file_df[metric].min()
+      max_val = per_file_df[metric].max()
+
+      metric_label = metric.replace('_', ' ').title().replace('F1', 'F1').replace('At', '@')
+      output.append(f"{metric_label:18s} mean={mean_val:.3f}  std={std_val:.3f}  min={min_val:.3f}  max={max_val:.3f}")
+
+  return "\n".join(output)
+
+
 def save_results(
   output_dir: Path,
   metrics: Dict[str, float],
@@ -410,16 +609,36 @@ def save_results(
   y_pred: np.ndarray,
   all_preds: np.ndarray,
   cell_types: list,
-  save_predictions: bool
+  save_predictions: bool,
+  per_file_df: Optional[pd.DataFrame] = None
 ):
   """Save evaluation results to files."""
 
   output_dir.mkdir(parents=True, exist_ok=True)
 
+  # Prepare metrics JSON with per-file metrics if available
+  metrics_output = metrics.copy()
+  if per_file_df is not None and not per_file_df.empty:
+    # Convert per-file dataframe to list of dicts for JSON
+    per_file_metrics = per_file_df.to_dict('records')
+    metrics_output['per_file_metrics'] = per_file_metrics
+
+    # Add summary statistics
+    summary_stats = {}
+    for col in ['logloss', 'accuracy', 'macro_f1', 'hierarchical_f1', 'recall_at_2', 'recall_at_5', 'recall_at_10']:
+      if col in per_file_df.columns:
+        summary_stats[col] = {
+          'mean': float(per_file_df[col].mean()),
+          'std': float(per_file_df[col].std()),
+          'min': float(per_file_df[col].min()),
+          'max': float(per_file_df[col].max())
+        }
+    metrics_output['per_file_summary_stats'] = summary_stats
+
   # Save metrics JSON
   metrics_file = output_dir / 'evaluation_results.json'
   with open(metrics_file, 'w') as f:
-    json.dump(metrics, f, indent=2)
+    json.dump(metrics_output, f, indent=2)
   print(f"Saved metrics to: {metrics_file}")
 
   # Save summary text
@@ -526,12 +745,14 @@ def main():
     print(f"  Output classes: {num_classes}")
 
   # Load evaluation data
-  X_eval, y_eval = load_evaluation_data(
+  compute_per_file = not args.skip_per_file
+  X_eval, y_eval, file_info = load_evaluation_data(
     str(data_dir),
     config,
     code_remapping,
     filtered_codes,
-    verbose=args.verbose
+    verbose=args.verbose,
+    track_files=compute_per_file
   )
 
   # Validate dimensions
@@ -642,6 +863,33 @@ def main():
 
   print(summary_text)
 
+  # Compute and display per-file metrics if requested
+  per_file_df = None
+  per_file_output = ""
+  if compute_per_file and file_info:
+    if args.verbose:
+      print(f"\nComputing per-file metrics for {len(file_info)} files...")
+
+    per_file_df = compute_per_file_metrics(
+      model=model,
+      file_info=file_info,
+      cell_types=filtered_cell_types,
+      cell_type_to_idx=cell_type_to_idx,
+      ontology_graph=ontology_graph if enable_hierarchical else None,
+      batch_size=args.batch_size,
+      device=device
+    )
+
+    # Print per-file metrics
+    per_file_output = format_per_file_metrics(per_file_df)
+    if per_file_output:
+      print(per_file_output)
+
+  # Combine summary with per-file output
+  full_summary = summary_text
+  if per_file_output:
+    full_summary = summary_text + per_file_output
+
   # Save results
   if args.output_dir:
     output_dir = Path(args.output_dir)
@@ -651,12 +899,13 @@ def main():
   save_results(
     output_dir=output_dir,
     metrics=metrics,
-    summary_text=summary_text,
+    summary_text=full_summary,
     y_true=y_true,
     y_pred=y_pred,
     all_preds=all_preds,
     cell_types=filtered_cell_types,
-    save_predictions=args.save_predictions
+    save_predictions=args.save_predictions,
+    per_file_df=per_file_df
   )
 
   print(f"\nEvaluation complete!")
