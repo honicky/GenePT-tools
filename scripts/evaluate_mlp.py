@@ -251,7 +251,7 @@ Examples:
   parser.add_argument('--alpha', type=float, nargs='+', default=[0.5],
                      help='Alpha value(s) for soft prior strength (default: 0.5)')
   parser.add_argument('--alpha-sweep', action='store_true',
-                     help='Enable alpha sweep mode, evaluates [0.0, 0.1, 0.2, ..., 1.0] (default: False)')
+                     help='Enable alpha sweep mode, evaluates [1.0, 1.1, 1.2, ..., 2.0] (default: False)')
   parser.add_argument('--save-per-tissue-metrics', action='store_true',
                      help='Save detailed per-tissue metrics to CSV (default: False)')
 
@@ -1301,7 +1301,7 @@ def main():
 
     # Handle alpha sweep
     if args.alpha_sweep:
-      alpha_values = [round(x * 0.1, 1) for x in range(11)]  # [0.0, 0.1, 0.2, ..., 1.0]
+      alpha_values = [round(1.0 + x * 0.1, 1) for x in range(11)]  # [1.0, 1.1, 1.2, ..., 2.0]
       if args.verbose:
         print(f"  Alpha sweep mode enabled: {alpha_values}")
     elif args.verbose:
