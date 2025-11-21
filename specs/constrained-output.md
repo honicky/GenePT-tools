@@ -1263,6 +1263,134 @@ Detailed breakdown across 15 evaluation files:
 
 ---
 
+## V1 Model Evaluation Results (GenePT-only baseline)
+
+### Experimental Setup
+
+**Model**: V1 MLP classifier (checkpoint mlp_checkpoint_6000.pt, run nwhis8xb)
+- Architecture: 3 hidden layers, 5.3% dropout
+- Input: GenePT embeddings only (500 dimensions, first 500 of 3072)
+- Output: 377 cell types (>10,000 sample threshold, no filtering)
+- Training: 2 epochs, no input scaling
+
+**Dataset**: CellxGene test set (same as v2)
+- 120,984 samples across 15 files
+- 10 unique tissues (100% coverage after tissue mapping)
+- 89 unique cell types present
+
+**Baseline Performance**:
+- Accuracy: 38.54%
+- Macro F1: 12.66%
+- Recall@2: 51.90%
+- Recall@10: 80.42%
+- Hierarchical F1: 87.36%
+
+### Alpha Sweep Results (α = 0.0 to 2.0)
+
+Complete performance across 21 alpha values:
+
+| Alpha | Accuracy | Δ Acc | Macro F1 | Δ F1 | Hier. F1 | Δ Hier. F1 |
+|-------|----------|-------|----------|------|----------|------------|
+| **Baseline** | **38.54%** | - | **12.66%** | - | **87.36%** | - |
+| **Allowlist** | **9.61%** | **-28.93%** | **3.05%** | **-9.61%** | **70.17%** | **-17.19%** |
+| 0.0 | 38.54% | +0.00% | 12.66% | +0.00% | 87.36% | +0.00% |
+| 0.1 | 45.52% | +6.98% | 16.67% | +4.01% | 88.92% | +1.56% |
+| 0.2 | 48.01% | +9.46% | 19.98% | +7.32% | 89.38% | +2.02% |
+| 0.3 | 49.04% | +10.50% | 22.69% | +10.03% | 89.60% | +2.24% |
+| 0.4 | 49.70% | +11.16% | 24.02% | +11.37% | 89.71% | +2.35% |
+| 0.5 | 50.05% | +11.51% | 25.15% | +12.50% | 89.71% | +2.35% |
+| **0.6** | **50.20%** | **+11.66%** | **25.49%** | **+12.84%** | **89.69%** | **+2.33%** |
+| **0.7** | **50.20%** | **+11.66%** | **26.43%** | **+13.78%** | **89.63%** | **+2.27%** |
+| 0.8 | 49.91% | +11.37% | 26.90% | +14.25% | 89.50% | +2.14% |
+| 0.9 | 49.39% | +10.85% | 27.76% | +15.10% | 89.34% | +1.98% |
+| 1.0 | 48.72% | +10.17% | 28.20% | +15.54% | 89.11% | +1.75% |
+| 1.1 | 47.77% | +9.23% | 28.11% | +15.45% | 88.79% | +1.43% |
+| 1.2 | 46.62% | +8.08% | 28.25% | +15.59% | 88.40% | +1.04% |
+| **1.3** | **45.29%** | **+6.75%** | **28.37%** | **+15.71%** | **87.94%** | **+0.58%** |
+| 1.4 | 43.72% | +5.18% | 27.91% | +15.25% | 87.38% | +0.02% |
+| 1.5 | 42.12% | +3.58% | 26.90% | +14.24% | 86.75% | -0.61% |
+| 1.6 | 40.54% | +1.99% | 26.10% | +13.44% | 86.08% | -1.28% |
+| 1.7 | 38.95% | +0.40% | 25.09% | +12.43% | 85.35% | -2.01% |
+| 1.8 | 37.34% | -1.20% | 23.85% | +11.19% | 84.54% | -2.82% |
+| 1.9 | 35.89% | -2.65% | 23.00% | +10.34% | 83.72% | -3.64% |
+| 2.0 | 34.47% | -4.08% | 21.57% | +8.91% | 82.85% | -4.51% |
+
+### Key Findings
+
+**Metric-Specific Optima:**
+- **Peak accuracy**: α = 0.6-0.7 (50.20%, +11.66% over baseline)
+- **Peak macro F1**: α = 1.3 (28.37%, +15.71% over baseline)
+- **Peak hierarchical F1**: α = 0.4-0.6 (~89.7%, +2.3-2.4% over baseline)
+
+**Crossover Points:**
+- Accuracy drops below baseline at α > 1.7
+- Hierarchical F1 returns to baseline at α ≈ 1.4
+- Macro F1 remains positive across entire range (even at α = 2.0)
+
+**Hard Constraints (Allowlist):**
+- Severely degrades all metrics (-28.93% accuracy, -9.61% macro F1, -17.19% hierarchical F1)
+- Demonstrates that hard constraints are too restrictive (consistent with v2 findings)
+- Soft priors are strongly preferred
+
+### Comparison: V1 vs V2 Models
+
+**Architecture Differences:**
+- **V1**: 377 classes, 500 GenePT dims only, 3 hidden layers, no input scaling
+- **V2**: 302 classes, 2048 dims (GenePT 1536d + scGPT 512d + metadata), 6 hidden layers, scaled inputs
+
+**Baseline Performance Comparison:**
+
+| Metric | V1 (GenePT-only) | V2 (Composable) | Δ V2 vs V1 |
+|--------|------------------|-----------------|------------|
+| Accuracy | 38.54% | 46.84% | +8.30% |
+| Macro F1 | 12.66% | 18.51% | +5.85% |
+| Recall@2 | 51.90% | - | - |
+| Recall@10 | 80.42% | - | - |
+| Hierarchical F1 | 87.36% | 91.70% | +4.34% |
+
+**Constrained Performance (Optimal α):**
+
+| Metric | V1 @ α=0.6 | V2 @ α=0.5 | Δ V2 vs V1 |
+|--------|------------|------------|------------|
+| Accuracy | 50.20% | 54.94% | +4.74% |
+| Macro F1 | 25.49% | 27.94% | +2.45% |
+| Hierarchical F1 | 89.69% | 93.04% | +3.35% |
+
+**Absolute Improvements from Constraints:**
+
+| Metric | V1 Improvement | V2 Improvement | Δ V2 vs V1 |
+|--------|----------------|----------------|------------|
+| Accuracy | +11.66% | +8.10% | -3.56% |
+| Macro F1 | +15.71% | +13.47% | -2.24% |
+| Hierarchical F1 | +2.35% | +1.34% | -1.01% |
+
+**Key Insights:**
+1. **V2 baseline is stronger**: Composable embeddings provide +8.3% accuracy over GenePT-only
+2. **V1 benefits more from constraints**: +11.66% accuracy gain vs +8.10% for V2
+3. **Both models converge with constraints**: V1 reaches 50.2%, V2 reaches 54.9% (~4.7% gap)
+4. **Optimal alpha differs slightly**: V1 peaks at α=0.6-0.7, V2 peaks at α=0.5
+5. **Consistent pattern**: Both models show accuracy peak at α=0.5-0.7, macro F1 peak at α=1.2-1.3
+6. **Hard constraints fail universally**: Both models suffer severe degradation with allowlist mode
+
+### Implementation Notes (V1-specific)
+
+**Checkpoint Loading:**
+- V1 checkpoints saved without "model." prefix (direct nn.Sequential)
+- V2 checkpoints have "model." prefix (wrapped in MLPClassifier)
+- Evaluation script automatically detects and remaps v1 checkpoint keys
+
+**Input Scaling:**
+- V1 trained on raw GenePT embeddings (no scaling)
+- V2 uses 0.021 scaling factor for GenePT, 0.044 for scGPT
+- Must disable scaling when evaluating v1 models (`disable_scaling=True`)
+
+**Cell Type Mapping:**
+- V1 uses row-indexed mapping (row 0 → output 0, no filtering)
+- V2 uses dynamic code remapping (filtered from 832 to 302 classes)
+- Both approaches compatible with constraint framework
+
+---
+
 ## References
 
 - CellxGene Census: https://chanzuckerberg.github.io/cellxgene-census/

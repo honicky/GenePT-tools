@@ -48,7 +48,7 @@ fixed_params:
   # Checkpointing - ENABLED
   local_checkpoints: true
   checkpoint_dir: "/data/GenePT-tools/checkpoints/vflydg4e_retrain"
-  best_model_metric: "hierarchical_f1"
+  best_model_metric: "val_hierarchical_f1"
   best_model_mode: "max"
 
   # System

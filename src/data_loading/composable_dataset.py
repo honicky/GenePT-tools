@@ -57,7 +57,8 @@ class ComposableTrainingDataset(IterableDataset):
         test_genept_suffix: str = "_test_v1_scgpt",
         test_tissue_suffix: str = "_test_v1_tissue",
         test_metadata_suffix: str = "_test_v1",
-        cell_type_codes: Optional[pd.Series] = None
+        cell_type_codes: Optional[pd.Series] = None,
+        disable_scaling: bool = False
     ):
         """
         Initialize dataset.
@@ -97,10 +98,13 @@ class ComposableTrainingDataset(IterableDataset):
 
         # Per-embedding-type scaling factors (measured from raw embedding distributions)
         # Each embedding type is scaled to have std ~1.0 independently
-        self.embedding_scales = {
-            'genept': 0.021,  # Typical std of raw GenePT embeddings
-            'scgpt': 0.044,   # Typical std of raw scGPT embeddings
-        }
+        if disable_scaling:
+            self.embedding_scales = {}  # No scaling
+        else:
+            self.embedding_scales = {
+                'genept': 0.021,  # Typical std of raw GenePT embeddings
+                'scgpt': 0.044,   # Typical std of raw scGPT embeddings
+            }
 
         # Test mode parameters
         self.is_test_mode = is_test_mode

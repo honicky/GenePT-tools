@@ -62,6 +62,41 @@ def load_cell_types_from_counts(cell_counts_file):
   return cell_types, cell_type_codes
 
 
+def load_cell_types_from_v1_mapping(v1_mapping_file):
+  """Load cell types from v1 model mapping file.
+
+  The v1 model mapping file has cell types ordered by row number,
+  where row index corresponds directly to the model's output dimension.
+  Row 0 -> output[0], row 1 -> output[1], etc.
+
+  Args:
+    v1_mapping_file: Path to CSV file with 'cell_type' column (code column ignored)
+
+  Returns:
+    Tuple of (cell_types list indexed by row, cell_type_codes Series)
+  """
+  # Convert to Path if string
+  v1_mapping_file = Path(v1_mapping_file)
+
+  if not v1_mapping_file.exists():
+    raise FileNotFoundError(f"V1 mapping file not found: {v1_mapping_file}")
+
+  # Load v1 mapping file
+  mapping_df = pd.read_csv(v1_mapping_file)
+
+  # Verify required column
+  if 'cell_type' not in mapping_df.columns:
+    raise ValueError(f"v1_mapping_file must have 'cell_type' column")
+
+  # Extract cell types (row order defines the model output indexing)
+  cell_types = mapping_df['cell_type'].tolist()
+
+  # Create sequential codes from 0 to n-1 (same as row index)
+  cell_type_codes = pd.Series(range(len(cell_types)), index=cell_types)
+
+  return cell_types, cell_type_codes
+
+
 def map_tissue_to_cz_slim(tissue_id: str) -> Optional[str]:
   """Map arbitrary tissue ID to CZ slim tissue using three-tier strategy.
 
@@ -207,8 +242,13 @@ Examples:
                      help='Path to config JSON file with model and data settings')
   parser.add_argument('--data-dir', type=str, required=True,
                      help='Base directory containing parquet files to evaluate on')
-  parser.add_argument('--cell-counts', type=str, required=True,
-                     help='Path to cell counts CSV file for cell type definitions')
+
+  # Cell type mapping - mutually exclusive between v1 and v2 formats
+  cell_type_group = parser.add_mutually_exclusive_group(required=True)
+  cell_type_group.add_argument('--cell-counts', type=str,
+                     help='Path to cell counts CSV file for cell type definitions (v2 models)')
+  cell_type_group.add_argument('--v1-cell-types', type=str,
+                     help='Path to v1 cell type mapping CSV file (cell_type column, row index = output dim)')
 
   # Optional arguments
   parser.add_argument('--embedding-types', type=str, default=None,
@@ -343,7 +383,8 @@ def load_evaluation_data(
   cell_type_codes: pd.Series,
   verbose: bool = False,
   track_files: bool = True,
-  extract_tissue_ids: bool = False
+  extract_tissue_ids: bool = False,
+  disable_scaling: bool = False
 ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[list]]:
   """Load evaluation data using ComposableTrainingDataset.
 
@@ -377,6 +418,7 @@ def load_evaluation_data(
     test_tissue_suffix=config.get('tissue_suffix', ''),
     test_metadata_suffix=config.get('metadata_suffix', ''),
     cell_type_codes=cell_type_codes,
+    disable_scaling=disable_scaling,
     verbose=verbose
   )
 
@@ -417,6 +459,7 @@ def load_evaluation_data(
       test_tissue_suffix=config.get('tissue_suffix', ''),
       test_metadata_suffix=config.get('metadata_suffix', ''),
       cell_type_codes=cell_type_codes,
+      disable_scaling=disable_scaling,
       verbose=False
     )
     file_dataset.file_list = [file_path]
@@ -1153,10 +1196,20 @@ def main():
     print(f"Error: Config file not found: {config_path}")
     sys.exit(1)
 
-  cell_counts_path = Path(args.cell_counts)
-  if not cell_counts_path.exists():
-    print(f"Error: Cell counts file not found: {cell_counts_path}")
-    sys.exit(1)
+  # Handle cell type mapping (v1 or v2 format)
+  if args.cell_counts:
+    cell_counts_path = Path(args.cell_counts)
+    if not cell_counts_path.exists():
+      print(f"Error: Cell counts file not found: {cell_counts_path}")
+      sys.exit(1)
+    is_v1_model = False
+  else:
+    v1_cell_types_path = Path(args.v1_cell_types)
+    if not v1_cell_types_path.exists():
+      print(f"Error: V1 cell types file not found: {v1_cell_types_path}")
+      sys.exit(1)
+    cell_counts_path = v1_cell_types_path  # Use same variable name for compatibility
+    is_v1_model = True
 
   data_dir = Path(args.data_dir)
   if not data_dir.exists():
@@ -1187,14 +1240,23 @@ def main():
   if args.verbose:
     print(f"\nLoading cell types from {cell_counts_path}...")
 
-  cell_types, cell_type_codes = load_cell_types_from_counts(cell_counts_path)
-
-  filtered_cell_types, filtered_codes, code_remapping, mapping_df = create_code_remapping(
-    cell_types,
-    cell_type_codes,
-    cell_counts_path,
-    config['cell_count_threshold']
-  )
+  if is_v1_model:
+    cell_types, cell_type_codes = load_cell_types_from_v1_mapping(cell_counts_path)
+    if args.verbose:
+      print(f"  Loaded v1 model with {len(cell_types)} cell types")
+    # V1 models don't use filtering - all cell types are already included
+    filtered_cell_types = cell_types
+    filtered_codes = cell_type_codes
+    code_remapping = {i: i for i in range(len(cell_types))}  # Identity mapping
+    mapping_df = None
+  else:
+    cell_types, cell_type_codes = load_cell_types_from_counts(cell_counts_path)
+    filtered_cell_types, filtered_codes, code_remapping, mapping_df = create_code_remapping(
+      cell_types,
+      cell_type_codes,
+      cell_counts_path,
+      config['cell_count_threshold']
+    )
 
   num_classes = len(filtered_cell_types)
 
@@ -1213,6 +1275,7 @@ def main():
     print(f"  Output classes: {num_classes}")
 
   # Load evaluation data
+  # V1 models were trained without input scaling, so disable it
   compute_per_file = not args.skip_per_file
   X_eval, y_eval, tissue_ids_eval, file_info = load_evaluation_data(
     str(data_dir),
@@ -1221,7 +1284,8 @@ def main():
     filtered_codes,
     verbose=args.verbose,
     track_files=compute_per_file,
-    extract_tissue_ids=args.enable_constraints
+    extract_tissue_ids=args.enable_constraints,
+    disable_scaling=is_v1_model
   )
 
   # Validate dimensions
@@ -1251,7 +1315,31 @@ def main():
     print("Error: Checkpoint does not contain 'model_state_dict'")
     sys.exit(1)
 
-  model.load_state_dict(checkpoint['model_state_dict'])
+  state_dict = checkpoint['model_state_dict']
+
+  # Try to load checkpoint - handle both v1 (no "model." prefix) and v2 (with "model." prefix) formats
+  try:
+    # Try strict loading first (v2 format)
+    model.load_state_dict(state_dict, strict=True)
+  except RuntimeError as e:
+    if "unexpected key" in str(e).lower() or "missing key" in str(e).lower():
+      # Check if this is a v1 checkpoint (keys without "model." prefix)
+      if state_dict and not any(k.startswith('model.') for k in state_dict.keys()):
+        # V1 format: add "model." prefix to all keys
+        if args.verbose:
+          print("Detected v1 checkpoint format (no 'model.' prefix)")
+          print("Remapping keys to add 'model.' prefix...")
+        state_dict = {'model.' + k: v for k, v in state_dict.items()}
+        model.load_state_dict(state_dict, strict=True)
+      else:
+        # Unknown mismatch, try strict=False as fallback
+        if args.verbose:
+          print("Warning: Strict loading failed, retrying with strict=False")
+          print(f"         Error: {str(e)[:200]}")
+        model.load_state_dict(state_dict, strict=False)
+    else:
+      raise
+
   model = model.to(device)
   model.eval()
 
@@ -1301,7 +1389,7 @@ def main():
 
     # Handle alpha sweep
     if args.alpha_sweep:
-      alpha_values = [round(1.0 + x * 0.1, 1) for x in range(11)]  # [1.0, 1.1, 1.2, ..., 2.0]
+      alpha_values = [round(x * 0.1, 1) for x in range(21)]  # [0.0, 0.1, 0.2, ..., 2.0]
       if args.verbose:
         print(f"  Alpha sweep mode enabled: {alpha_values}")
     elif args.verbose:
